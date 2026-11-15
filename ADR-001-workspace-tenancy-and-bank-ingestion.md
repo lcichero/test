@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | **Proposed** |
-| Date | 2026-11-04; revised 2026-11-05 to incorporate the product decisions of three review rounds; revised 2026-11-15 for the code changes of PR #716 and the Spring Modulith epic #775 (section 4.8) |
+| Date | 2026-11-04; revised 2026-11-05 to incorporate the product decisions of three review rounds; revised 2026-11-15 for the code changes of PR #716 and the Spring Modulith epic #775 (section 4.8); independent review recorded in 28.3 and assessed in 28.4 (2026-11-15) |
 | Deciders | Repository owner (product), backend maintainers |
 | Supersedes | Nothing. Builds on the FOFI Architecture Assessment and the FOFI Tenancy and Ownership Decision (both 2026-11-04) |
 | Reviews incorporated | [Section 24 review](ADR-001-section-24-review.md) (round 1), [E3 and E4 review](ADR-001-review-e3-e4.md) (round 2), [Deletion and billing review](ADR-001-review-deletion-billing.md) (round 3) |
@@ -363,7 +363,7 @@ erDiagram
 | Source record to FOFI transaction | at most 1 per source account | `UNIQUE (source_account_id, external_record_id)` |
 | Collaboration grant to resource | exactly 1 PERSONAL resource, 1 grantee, 1 Household | `owner_workspace_id` must be PERSONAL; `household_workspace_id` must be HOUSEHOLD; membership validity checked per request (section 9.5) |
 
-Why `source_account.workspace_id` exists although it is derivable: every repository query filters on it directly, and the composite FK guarantees it equals the mapped account's workspace. An unmapped source account carries the workspace in which the user is reviewing it (their PERSONAL workspace by default) so that it is visible to them and to no one else.
+Why `source_account.workspace_id` exists although it is derivable: every repository query filters on it directly, and the composite FK guarantees it equals the mapped account's workspace. An unmapped source account always carries its connection user's PERSONAL workspace, so that it is visible to them and to no one else; mapping, unmapping and remapping change `account_id`, `workspace_id` and `sync_role` in one transaction (REV-7, 28.4).
 
 ## 9. Ownership and membership lifecycle
 
@@ -559,7 +559,7 @@ Transaction status: `ACTIVE`, `USER_EXCLUDED` (11.7), `REMOVED_BY_PROVIDER`. Eve
 | Provider deletes a transaction | Within the fetched window, a link not returned for two consecutive syncs marks its transaction `REMOVED_BY_PROVIDER` (soft); never hard-deleted automatically |
 | Reversal | A separate bank transaction; imported normally; refund linking stays a Money Records concern |
 | Historical import on reconnect or relink | Same path; links prevent re-import from the same source account; a new source account (new ids) for an account that already has history uses the **overlap boundary** below |
-| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; compare per-day counts and sums by `(date, amount)`; if they agree, record the new links against the matched rows as `MATCHED` (metadata only, one-to-one by order of appearance); if they disagree, create `AMBIGUOUS` review items listing the differences for the user to resolve. A match against a `USER_EXCLUDED` transaction keeps it excluded |
+| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; apply the matching contract of 11.8: a record is linked as `MATCHED` only when its match key has a unique bijection; every other record becomes an `AMBIGUOUS` review item. Per-day counts and sums are only a pre-check, never a basis for a link (REV-1, 28.4). A match against a `USER_EXCLUDED` transaction keeps it excluded |
 | Akahu `_migrated` transactions | Link added for the new id against the transaction whose link equals `_migrated`; no new row |
 
 Confirmation of the re-issue handling (review item, no automatic merge) is `PENDING` (U37). Removal detection follows D-34 (11.5).
@@ -602,6 +602,7 @@ Lock order, to prevent deadlocks: user row, then workspace rows in ascending id,
 1. A run acquires the connection lease. If it is held, a scheduled run skips the connection; a manual sync returns 409 "a sync is already running" and the frontend shows the running state.
 2. Provider data is fetched with no database transaction open. Fetch failures end the run; nothing was written; the checkpoint is unchanged.
 3. Each source account is a **unit**: one short transaction inside an explicit `WorkspaceTask` for the mapped account's workspace, taking that account's lock, then: rebuild pendings, insert links and transactions, update provider-changed transactions, mark removals, record the balance, move that source account's checkpoint. Commit.
+3a. **Post-lock revalidation (REV-6).** After taking the account lock, the unit re-reads the source account's `account_id`, `workspace_id`, `sync_role` and status and checks that the connection's user is an ACTIVE member of that workspace. If anything differs from the state the run started with, it writes nothing and records `SKIPPED_STALE_MAPPING`.
 4. A failure in one unit rolls back that unit only; earlier units stay committed; the run records a partial outcome on its `import_job` and continues with the next unit.
 5. The run ends by recording the `import_job` outcome and releasing the lease.
 
@@ -653,7 +654,7 @@ A separate tombstone table is rejected: the link already identifies the source r
 Several sources may map to one internal account (Q7): a live feed, a CSV of the same account, a later second provider.
 
 - **Coverage.** The covered range of a live-feed SOURCE source account is from the date of its earliest linked record to the date of its last successful sync. Ranges are stored per source account and recomputed at commit of each unit.
-- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. Per day, it matches exactly by the `(date, amount)` multiset against `ACTIVE` and `USER_EXCLUDED` transactions of the account and records `MATCHED` links. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
+- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. It matches by the **matching contract** of 28.4 (REV-1): key `(account, currency, signed amount, posted date)`; automatic `MATCHED` only when the key has exactly one record and one candidate, or when an exact normalized-description tie-break gives a unique bijection; candidates are `ACTIVE`, `USER_EXCLUDED` and `REMOVED_BY_PROVIDER` transactions not yet linked from that source account. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
 - **Known limitation.** Banks and files can date the same transaction differently (posting date against transaction date). Such rows will not match exactly and will arrive as review items instead of duplicates. The user resolves them; FOFI never guesses.
 - **Re-imports.** A file row that already has a link on the same source account is skipped, whatever its outcome. The identity of rows without an id is `PENDING` (TD-6).
 
@@ -799,7 +800,7 @@ What counts as "can renew or charge again" (applies P1 to Stripe states):
 
 Technical design (this ADR):
 
-- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request.
+- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request, before the deletion transaction, as part of the deletion protocol of 28.4 (REV-2): mark the deletion, refuse new checkouts, expire open Checkout Sessions, check all subscriptions, compare recorded webhooks after locking the user row, and delete or fully cancel the Stripe customer after commit.
 - `subscription` gains Stripe `status`, `cancel_at_period_end` and `cancel_at`, synced from webhooks, for display only (fixes D6).
 - Every Stripe webhook handler ignores events whose owner id no longer exists and never creates or extends an entitlement for it (fixes D5). An event that would grant or renew access for a missing owner enqueues an immediate Stripe cancellation and raises an admin alert for manual refund review. This is defensive only, never part of the normal path.
 
@@ -819,6 +820,8 @@ Still `PENDING` (section 24.3): the Stripe customer after deletion (U17), admin 
 | Collaboration context | A request on a resource granted to the caller targets the grantor's PERSONAL workspace and is authorized by an active `resource_collaboration` grant instead of a membership (9.5) | Limited to the granted resource ids and the grant's permission; READ_ONLY refuses writes; never usable for consolidated reads |
 
 `CurrentWorkspace` (in Identity and Access) resolves `(userId, workspaceId, role, mode)` once per request in a filter after authentication, and publishes it to the security context. `mode` is `MEMBER`, `CONSOLIDATED_READ` or `COLLABORATION` (with the granted ids). It replaces `security/SecurityContextActiveContext.java` and the `ActiveContext` interface.
+
+**Token authority (REV-3).** A token acts only in its own `workspace_id`. `consolidated_read` is an explicit read-only exception limited to `@ConsolidatedRead` endpoints over the caller's ACTIVE memberships evaluated per request; tokens never use the collaboration context; a token is refused entirely once its owner is no longer an ACTIVE member of its workspace. The full matrix is in 28.4.
 
 **Endpoint scope (D-36).** Every controller method declares one of `@WorkspaceScoped` (needs a validated workspace or collaboration context), `@UserScoped` (identity-level data: profile, subscription, tokens, feedback, deletion; no workspace) or `@AdminScoped` (admin role, section 16.9). A test fails for any undeclared method. Bulk operations (bulk delete, bulk update, apply rule to selection) load every requested id with the workspace predicate and refuse the whole request with 404 if any id is missing, so a list of ids cannot reach another workspace. Attachment and receipt downloads resolve the owning entity in the workspace before serving the blob.
 
@@ -1118,7 +1121,7 @@ ALTER TABLE subscription ADD COLUMN cancel_at_period_end BOOLEAN;
 ALTER TABLE subscription ADD COLUMN cancel_at TIMESTAMP;
 ```
 
-A deferred constraint trigger on `workspace_membership` rejects a commit that leaves an ACTIVE workspace with zero ACTIVE OWNERs. Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
+A deferred constraint trigger on `workspace_membership` rejects a commit that leaves a workspace **that still exists** with zero or several ACTIVE OWNERs (workspaces have no status, 9.2). The full integrity contract (immutable `workspace.type`, composite FK `(workspace_id, workspace_type)`, single-member PERSONAL index, `user_id` CHECK and `ON DELETE RESTRICT`) is in 28.4 (REV-4) and supersedes the `ON DELETE SET NULL` sketch above. The outbox contract is in 28.4 (REV-9). Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
 
 ## 18. Migration strategy
 
@@ -1192,7 +1195,7 @@ One database transaction:
 2. For each HOUSEHOLD the user OWNS: dissolve it and erase all its data through the module erasers, delete its memberships and grants, and unmap other members' source accounts from it (their connections stay; connections belong to users) (Q1).
 3. For each other HOUSEHOLD membership: end the membership; Household data stays.
 4. Delete every COLLABORATOR grant the user gave or received.
-5. For each connection: mark REVOKED, delete tokens, enqueue `REVOKE_PROVIDER_TOKEN`; fail over partner STANDBY source accounts where applicable.
+5. For each connection: mark REVOKED, enqueue `REVOKE_PROVIDER_TOKEN` carrying the token encrypted (a direct revoke was already attempted before the transaction), then delete the stored tokens (REV-9); fail over partner STANDBY source accounts where applicable.
 6. Erase the PERSONAL workspace: per workspace with an explicit `WorkspaceScope`, delete through each module's `WorkspaceDataEraser`, including blobs by owning entity (transaction attachments, receipt photos, feedback images), not by receipt only.
 7. Delete identity and billing rows (tokens, OAuth, 2FA, preferences, `subscription`, `beta_access`, `stripe_customer`). Feedback submissions are handled per U14 (`PENDING`: delete, or anonymize).
 8. Clear `actor_label` on audit rows of surviving workspaces; `created_by` becomes null through `ON DELETE SET NULL`.
@@ -1727,18 +1730,18 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
-| 0a Deletion integrity | **Ready**, and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Partly ready.** Webhook guard and Stripe status fields are ready. The eligibility check is ready for every state except `paused` and `trialing` | TD-4; U21, U38 (eligibility); U17 (customer action); U19 (admin route); U3 (OWNER warning text) |
+| 0a Deletion integrity | **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
+| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2) and outbox contract (REV-9) are now specified; Stripe status fields and the webhook guard can start | TD-4 with the REV-9 contract; U21, U38 (eligibility); U17 and AS-8 (customer backstop, REV-2); U19 (admin route); U3 (OWNER warning text); U41 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
-| 3 Workspace infrastructure | Not ready | Phase 2; AS-10 |
+| 3 Workspace infrastructure | Not ready | Phase 2; AS-10; REV-3 matrix and REV-4 integrity contract in the migrations and tests; REV-8 module smoke tests |
 | 4 Data foundation | Not ready | Phase 3; TD-8; AS-5 |
 | 5 Workspace scoping | Not ready | Phase 4; U5, U24, U27, U28, U31, U35 |
 | 6a Ingestion model and locks | Not ready | Phase 5; TD-5, TD-7; AS-6, AS-7 |
-| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37 |
-| 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2 |
-| 7a Households | Not ready | Phases 5, 6c; U3, U6, U9, U10, U16, U22, U23, U25, U26, U29; TD-9 |
+| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39; REV-1 contract in the tests |
+| 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2; REV-6 step 3a and REV-7 rules |
+| 7a Households | Not ready | Phases 5, 6c; U9 (REV-6); U3, U6, U10, U16, U22, U23, U25, U26, U29; TD-9 |
 | 7b COLLABORATOR | Not ready | Phase 7a; CU1 to CU4 (CU6 if VIEWER ships) |
 | 8 Legacy removal | Not ready | Phase 7b plus one stable release |
 
@@ -1767,6 +1770,279 @@ This review is additive. It does not change any confirmed product decision in 24
 - **No product decisions were made by this review.** U3, U5–U10, U12, U14, U16–U17, U19–U24, U26–U38 and CU1–CU6 remain for Lionel unless explicitly resolved elsewhere in the decision register.
 - REV-1 through REV-6 are implementation blockers for their named phases, not reasons to abandon the workspace or modular-monolith direction.
 - The review did not independently re-run the repository's test suite or production SQL checks. Statements about current code and completed PRs remain the ADR's recorded findings; the review evaluates their architectural consistency.
+
+### 28.4 Assessment of the independent review (2026-11-15)
+
+This section records how each finding of 28.3 was assessed and addressed. It does not remove or rewrite 28.3, which stays as the reviewer wrote it. The ADR stays **Proposed**. Nothing here authorizes implementation. Where this assessment changed another section of the ADR, the change is tagged with the finding id (for example "(REV-2)") so the audit trail can be followed in both directions.
+
+Classification used below: **Confirmed** = a decision already in 24.1; **Technical** = a decision this ADR takes as engineering design and records in 24.2 or here; **Assumption** = a fact still to be verified; **Pending product** = needs Lionel's explicit choice and is listed in 28.4.3.
+
+The assessment was made against the ADR text and against the repository at master `ae838452` (2026-11-15). Code facts cited here were read in that revision, not taken from earlier documents.
+
+#### 28.4.1 Finding by finding
+
+##### REV-1: cross-source matching is weaker than the identity rule. **Valid, with one correction.**
+
+*Correction.* The review says 11.4 and 11.8 contradict the invariant of 11.1. They do not: 11.1 explicitly allows `date + amount` to be used in 11.4 and 11.8 to attach metadata, never to decide whether a money row exists. Matching in those sections never creates or deletes a money row. The real defect is different and more serious than a wording conflict.
+
+*Actual defects.*
+
+1. 11.4 compares **per-day counts and sums**. Counts and sums can agree for different multisets: on one day the old source has 10.00 and 30.00, the new source has 20.00 and 20.00. Both have count 2 and sum 40.00. 11.4 would record two `MATCHED` links against rows with different amounts. 11.8 already uses the stronger multiset rule, so the two sections disagree with each other.
+2. Even with exact multiset equality, "one-to-one by order of appearance" is arbitrary inside a bucket of several rows with the same date and amount (two 4.50 coffees on the same day). The consequence is not a wrong balance at matching time. It appears **later**: a `MATCHED` link is the identity used for every subsequent provider update (11.4, "same id": amount, description, date and merchant are overwritten) and for removal detection (D-34). A crossed link therefore makes a later provider correction overwrite the wrong row, or mark the wrong row `REMOVED_BY_PROVIDER`, which **does** change totals. It can also attach an `USER_EXCLUDED` row's identity to the record of the row the user kept.
+3. Neither section states currency, sign, or which date (posted or transaction) is compared.
+
+*Resolution (Technical).* One matching contract, written once in 11.8 and referenced by 11.4:
+
+- The **match key** is `(account_id, currency, signed amount at the account currency scale, posted date as reported by the source)`. Amount comparison is exact `BigDecimal` equality (D-35). Sign is part of the amount, so a debit never matches a credit.
+- Candidates are the account's transactions with status `ACTIVE`, `USER_EXCLUDED` or `REMOVED_BY_PROVIDER` that have **no link yet from the new source account**.
+- For each key, let `n` be the number of incoming records and `m` the number of candidates.
+  - `n = m = 1`: automatic `MATCHED`.
+  - `n = m > 1`: try the tie-breaker, exact equality of the normalized description (case and whitespace folded). If it gives a unique bijection, automatic `MATCHED`. If not, **all** records in the key become one grouped `AMBIGUOUS_MATCH` review item. The item offers "they are the same N transactions" as a one-click resolution that pairs them in order; that choice is the user's, not FOFI's.
+  - `n != m`: every record in the key becomes `AMBIGUOUS_MATCH`; nothing in that key is matched automatically.
+- Aggregate checks (counts, sums) are only a fast pre-check that a day needs no review. They are never the basis of a link.
+- A record matched against a `USER_EXCLUDED` transaction stays excluded (unchanged, 11.7).
+- Posted date against transaction date stays a known limitation (11.8). It produces review items, never wrong links.
+
+*Product impact.* More review items than the earlier text, on days with repeated identical amounts. That is the intended trade-off: a review item is recoverable, a crossed link is silent. The grouped one-click resolution keeps the cost low. This is recorded as **pending product** U39 only because it changes how many review items users see, and that UX matters for adoption.
+
+*Affected.* 11.1 (reference), 11.4 (failover row), 11.8 (rule), 11.9 (`AMBIGUOUS_MATCH` gains a grouped form), 26 (tests), Phases 6b and 6c.
+
+*Acceptance criteria.*
+
+- A. A day where counts and sums agree but the multisets differ produces review items and no `MATCHED` link.
+- B. Two records with the same key and different descriptions match one-to-one by description.
+- C. Two records with the same key and the same description become one grouped review item; no automatic link.
+- D. After an ambiguous match is resolved, a provider update to one record changes only the row the user paired it with.
+- E. A debit and a credit of the same absolute amount never match.
+- F. Property test: over randomly generated overlapping histories, no automatic `MATCHED` link ever pairs records whose key differs, and every automatically matched key had a unique bijection.
+
+##### REV-2: checkout and webhook race at deletion. **Valid, and understated.**
+
+*What the code shows.* `StripeCheckoutService` creates a Checkout Session against the user's existing Stripe customer (`setCustomer`, `client_reference_id = ownerId`, subscription metadata `ownerId`). A Checkout Session stays open on Stripe's side for up to 24 hours and can be completed by the browser without any request to FOFI.
+
+*Why the reviewer's proposal alone does not close it.* The review asks for a deletion-in-progress state that serializes webhook handling with deletion. That closes the **local** race (a webhook processed between the last check and the user-row lock). It cannot close the **remote** race: a session opened in another tab before deletion can be paid after FOFI has deleted everything. No database lock in FOFI can stop Stripe from creating that subscription. The defensive webhook path of 13.3 then has to cancel it, and the user has been charged once. That is a refund, not a prevented charge.
+
+*Resolution (Technical, except where marked).* A deletion protocol in four steps, with no network call inside a database lock (AP-8 kept):
+
+1. **Mark.** A short transaction sets `users.deletion_requested_at = now()` after the password and typed confirmation. While it is set, `StripeCheckoutService` refuses to create a session, and so does any other path that grants a plan. The mark is cleared if the user cancels the flow, and it expires after 15 minutes so an abandoned attempt never locks the account out of checkout.
+2. **Close remote entry points (outside any lock).** List the customer's Checkout Sessions with status `open` and **expire** each one through the Stripe API. Then list **all** the customer's subscriptions, in every status, and apply the 13.3 table. Stripe unreachable at either call means refusal (fail closed), and the mark is cleared.
+3. **Delete (one transaction, 19.3).** Lock the user row. Inside the lock, compare the local billing state with the state seen in step 2: if any Stripe webhook for this owner was **recorded** after the mark (`stripe_webhook_event` already stores processed events), roll back and return 409 "your billing changed, please try again". Webhook handlers take the same user row with `SELECT ... FOR SHARE` before writing, so a webhook either commits before the deletion lock (and is seen by this comparison) or runs after the user is gone (and hits the missing-owner guard).
+4. **Backstop (after commit, outbox).** Delete the Stripe customer. In Stripe, deleting a customer immediately cancels every subscription it still has, so even a subscription created by a race Stripe-side cannot renew. This makes U17 (a) part of the safety guarantee rather than only a privacy choice. **Pending product:** U17 must be confirmed with this new role in mind, and AS-8 (what Stripe keeps for invoices after customer deletion, NZ record-keeping) still has to be verified before it ships. If U17 (b) is chosen instead, the backstop becomes "cancel every subscription of the customer, immediately", which gives the same billing guarantee and keeps the customer.
+
+*Residual risk, stated honestly.* If Stripe has already accepted a payment for a session between step 2 and step 4, one charge has happened. The missing-owner webhook guard (13.3) raises the admin alert for refund review. The protocol reduces that window from "up to 24 hours" to "seconds", and no window exists at all for sessions opened after step 1.
+
+*Affected.* 13.3, 14 (the `DELETE /api/me` 409 reason), 19.2, 19.3, 20 (the "checkout in another tab" row), 21, data model (`users.deletion_requested_at`), Phase 0b.
+
+*Acceptance criteria.*
+
+- A. With the mark set, creating a checkout session returns 409, and no Stripe call is made.
+- B. An open Checkout Session that exists before deletion is expired by step 2 (Stripe test mode, asserted through the API).
+- C. Deterministic race test with a latch: a `customer.subscription.created` webhook committed between step 2 and the step 3 lock makes deletion return 409 and delete nothing.
+- D. A webhook that arrives while the step 3 transaction holds the lock waits, then finds no owner and grants nothing.
+- E. After a successful deletion, the outbox task deletes or fully cancels the customer; a Stripe test-mode check lists no subscription of the customer that is `active`, `trialing`, `past_due`, `unpaid`, `incomplete` or `paused`.
+- F. Stripe unreachable at step 2 refuses deletion and clears the mark.
+
+##### REV-3: consolidated-read authority of workspace-scoped tokens. **Valid.**
+
+*Defect.* Section 14 says a token "can never act in another workspace". Section 12.2 aggregates every ACTIVE membership. Both are meant to hold, but the ADR never says that `consolidated_read` is a deliberate, read-only exception, so an implementer could legitimately build either reading. Section 14 also lists a collaboration context without saying whether tokens can use it.
+
+*Resolution (Technical).* The token authority matrix below replaces the implicit reading. It is added to section 14.
+
+| Operation | Session (browser) | Token or MCP grant, `consolidated_read = false` | Token or MCP grant, `consolidated_read = true` |
+|---|---|---|---|
+| Read or write in workspace W | W from the header, ACTIVE membership in W | Only W = the token's `workspace_id`, ACTIVE membership in W | Same as the left column |
+| Consolidated read | ACTIVE memberships of the caller | Refused (403) | Read-only, only on endpoints declared `@ConsolidatedRead`; the set is the caller's ACTIVE memberships **evaluated per request**, intersected with any ids the client sends; a requested id outside the set is 403, never silently dropped |
+| Collaboration context (granted PERSONAL resource) | Allowed per 9.5 | Refused | Refused |
+| Writes outside W | Never | Never | Never |
+
+Additional rules:
+
+- If the caller is no longer an ACTIVE member of the token's own `workspace_id`, the token is refused for **every** operation, consolidated reads included. A token never outlives the membership it was issued for.
+- `consolidated_read` is chosen explicitly at issuance (a separate consent line for MCP, a separate checkbox for REST tokens), defaults to false, and cannot be added to an existing token. Changing it means issuing a new token.
+- Tokens refusing the collaboration context is a technical default for the first release: it keeps the token's reach equal to "one workspace plus, optionally, read-only aggregates". Whether MCP should later reach granted resources is **pending product** U40.
+
+*Affected.* 12.2, 14, 15.2, 20, 26, Phase 3 (token contract), Phase 5 (consolidated reads).
+
+*Acceptance criteria.*
+
+- A. One isolation test per cell of the matrix, for REST tokens and for MCP grants.
+- B. A token for W whose owner leaves W is refused on the next request, for workspace and consolidated endpoints.
+- C. A consolidated request that names a workspace outside the set returns 403.
+- D. An endpoint without `@ConsolidatedRead` refuses a consolidated-mode context even for a `consolidated_read` token.
+- E. No consolidated endpoint has a write method; an ArchUnit rule checks it.
+
+##### REV-4: membership invariants not represented by the schema. **Partly valid; the ADR deferred DDL on purpose, but the invariant itself had real gaps.**
+
+*Partly invalid.* Section 17 states that column-level detail belongs in the migrations. Asking for complete trigger DDL in the ADR is not necessary.
+
+*Valid gaps found while assessing it.*
+
+1. Section 17's deferred trigger "rejects a commit that leaves an **ACTIVE** workspace with zero ACTIVE OWNERs". Section 9.2 says a workspace **has no status**. The trigger refers to a state that does not exist. **Contradiction.**
+2. `workspace_membership.user_id ... ON DELETE SET NULL` with the comment "null only for pending email invites". Deleting a user would set `user_id` to null on that user's LEFT, REVOKED or even ACTIVE rows, which breaks the comment and would leave an ACTIVE membership with no user. **Contradiction.**
+3. `workspace_type` is "a copy, immutable" with nothing that makes it equal to `workspace.type`.
+4. "PERSONAL has exactly one member" needs a trigger as written; a declarative constraint is simpler and stronger.
+
+*Resolution (Technical).* The integrity contract, to be added to section 17 as constraints the migrations must implement:
+
+- `workspace.type` is immutable: an `UPDATE` trigger rejects any change. A workspace never changes type.
+- `workspace` gains `UNIQUE (id, type)`. Membership gets a composite FK `(workspace_id, workspace_type) REFERENCES workspace (id, type)`. Equality of the copy is now guaranteed by PostgreSQL.
+- `CREATE UNIQUE INDEX ux_personal_single_member ON workspace_membership (workspace_id) WHERE workspace_type = 'PERSONAL'`. This replaces the "second membership on PERSONAL" trigger.
+- `CHECK (user_id IS NOT NULL OR (status = 'INVITED' AND (invited_email IS NOT NULL OR code IS NOT NULL)))`.
+- `user_id` uses `ON DELETE RESTRICT`, not `SET NULL`. The deletion use case deletes the user's memberships explicitly (19.3 steps 2 and 3, now worded "delete" rather than "end"). A forgotten membership makes deletion fail loudly in tests instead of producing a membership without a user.
+- The owner trigger is a `DEFERRABLE INITIALLY DEFERRED` constraint trigger on `workspace_membership` (insert, update, delete). At commit it checks, for each affected `workspace_id` **that still exists**, that exactly one row has `role = 'OWNER' AND status = 'ACTIVE'`. Workspace creation inserts the workspace and its OWNER in one transaction, so it passes. Workspace deletion deletes the memberships and then the workspace, so the check finds no workspace and passes.
+- Concurrency is not left to the trigger. Every membership write takes the workspace row lock first (D-37, already stated). The trigger is the safety net; the lock is the mechanism. The partial unique index on the OWNER makes two concurrent promotions fail even if a code path forgot the lock.
+- Invitations by email have `user_id` null, so `ux_one_household` does not cover them. Accepting an invitation sets `user_id` and runs under the workspace lock; the unique index then rejects a second Household. This is correct and is now stated. What the user sees in that case is U29 (pending).
+
+*Affected.* 8 (cardinality table), 9.6, 17, 19.3, 26, Phases 3 and 4.
+
+*Acceptance criteria (real PostgreSQL, Testcontainers).*
+
+- A. Creating a workspace with no OWNER fails at commit.
+- B. Two concurrent transfers of one workspace: one succeeds, the other fails or serializes; exactly one OWNER afterwards.
+- C. Inserting a second membership into a PERSONAL workspace fails.
+- D. Changing `workspace.type` fails; a membership whose `workspace_type` differs from its workspace cannot be inserted.
+- E. Deleting a user who still has a membership row fails (RESTRICT), and the deletion use case removes those rows first.
+- F. Concurrent acceptance of two invitations from different Households by one user: one wins.
+- G. Dissolution concurrent with an invitation acceptance: either order leaves no membership of a deleted workspace.
+
+##### REV-5: erasure order not proven against the FK graph. **Valid in substance; it restates known gaps, with one factual correction.**
+
+*Correction.* The review says the erasers are "still proposed" (D-30). For user deletion they are implemented: every module provides a `security.OwnedDataEraser` with an `ErasureStep`, a 33-value enum in foreign-key order, and `AccountDeletionService` runs them sorted in one transaction (4.8, 16.0). What is still proposed is the **workspace** variant (`WorkspaceDataEraser`, Phase 5) and the schema-driven coverage test.
+
+*Valid.* D3 (tables that survive deletion), D3b (accounts erased before holdings, untested) and the extra blobs are open, and the schema-driven test does not exist. A missing step either aborts deletion (FK violation, the user cannot delete at all) or leaves personal data (breaks P2).
+
+*Resolution (Technical).* Phase 0a's definition of done is extended:
+
+- The schema-driven test reads `information_schema` / `pg_constraint` of the migrated test database and lists (a) every table with a FK to `users`, (b) every table with a column named `owner_id`, `user_id` or `workspace_id`, (c) every FK path to those tables. It fails if a listed table is not covered by an `ErasureStep`, and it fails if the `ErasureStep` order deletes a referenced table before its referencing table.
+- The full-cascade test seeds every listed table for the deleted user (including a holding linked to an account, recurring series without merchant or sub category, feedback with images, receipts with extra photos) plus one row per table for a second user, deletes the first user, then asserts zero rows for the first user and unchanged rows for the second.
+- A blob test asserts that no stored object remains whose owning entity belonged to the deleted user.
+- The production pre-check (orphans before adding FKs) is run, and its output is recorded in the PR.
+
+*Affected.* 4.3, 19.3, 26, Phase 0a.
+
+*Acceptance criteria.* The three tests above pass; adding a new table with `owner_id` and no eraser fails the build (checked once with a throwaway migration in the PR); pre-check output recorded.
+
+##### REV-6: source-account lifecycle at the membership boundary. **Valid. It also hides a missing guarantee in the sync path.**
+
+*Valid.* U9 is still pending, so L3, L7 and L9 have no defined behaviour for source accounts.
+
+*Missing guarantee found while assessing it.* The sync run fetches provider data with no transaction open (11.5 step 2), then opens a unit "inside an explicit `WorkspaceTask` for the mapped account's workspace". That task is built from the mapping **as read before the fetch**. If the member leaves while the fetch runs, the unit can still write the leaving member's bank data into the Household after they have left. The account lock does not prevent this, because the leave transaction has already committed and released.
+
+*Resolution.*
+
+- **Pending product:** U9. Recommendation unchanged: (a), unmap in the same transaction, failover where a STANDBY exists.
+- **Technical, regardless of U9:** after taking the account write lock, every unit **re-reads** the source account (`account_id`, `workspace_id`, `sync_role`, status) and verifies that the connection's user is an ACTIVE member of that workspace. If anything differs from the state the run started with, the unit writes nothing and records `SKIPPED_STALE_MAPPING` on the `import_job`. Added to 11.5 as step 3a.
+- **Technical, under U9 (a):** one use case `detachMemberSources(workspaceId, userId)` runs inside the leave, removal and member-deletion transactions. Lock order follows 11.5: the workspace row (already held by the lifecycle use case), then each affected internal account in ascending id. For each source account of that user mapped into the workspace: set `account_id = null`, `sync_role = IGNORED`, `workspace_id` = the user's PERSONAL workspace (REV-7); keep every `transaction_source_link` (provenance stays with the Household's transactions); close that source account's open review items in the Household as `DISMISSED` with reason `SOURCE_DETACHED`; delete its `pending_transaction` rows; keep its checkpoint. If it was SOURCE and a STANDBY of an ACTIVE member exists, promote the STANDBY with the overlap boundary (11.4, REV-1 contract). If no STANDBY exists, the internal account stays as a manual-style account with frozen history (as 10.5 "both connections revoked"), and an audit event records it.
+
+*Affected.* 9.3 (L3, L7, L9), 10.5, 11.5, 19.3, Phases 6c and 7a.
+
+*Acceptance criteria.*
+
+- A. Sync whose fetch is paused by a latch while the member leaves: the unit writes nothing and records `SKIPPED_STALE_MAPPING`.
+- B. Leave with a STANDBY: the STANDBY becomes SOURCE in the same transaction; the next sync of the remaining member imports normally.
+- C. Leave with no STANDBY: the account is frozen, history intact, no further imports from the leaver's connection.
+- D. After leave, the leaver's source account appears unmapped in their PERSONAL review list and in no Household query.
+- E. Lock-order test: leave concurrent with a sync unit on the same account completes without deadlock.
+
+##### REV-7: source-account scope while unmapped or moved. **Valid.**
+
+*Resolution (Technical).*
+
+- An unmapped source account **always** has `workspace_id` = its connection user's PERSONAL workspace. "The workspace in which the user is reviewing it" (section 8) is replaced by this fixed rule. It is visible only to that user, because PERSONAL has one member.
+- Mapping into workspace W, unmapping and remapping are one transaction under the account lock (and the workspace lock when W is a Household): update `account_id`, `workspace_id` and `sync_role` together (the composite FK `(account_id, workspace_id)` rejects any mismatch); resolve the `LINK_SUGGESTION` item; move other open review items of that source account to the new workspace, or dismiss them as `SOURCE_REMAPPED` when they refer to transactions of the previous account; delete its pending rows, which the next sync rebuilds.
+- `transaction_source_link.workspace_id` stays the workspace of the linked transaction, not of the source account. A remap never rewrites existing links.
+- Every review-item query filters on the item's own `workspace_id`, which this rule keeps correct.
+
+*Affected.* 8 (note under the table), 10.3, 10.4, 11.9, Phase 6c.
+
+*Acceptance criteria.* A remap leaves no open review item or pending row of that source account visible in the previous workspace; an unmapped source account is invisible to every other member; a mapping whose `workspace_id` differs from the account's workspace cannot be written.
+
+##### REV-8: Phase 2 leftovers have no owner. **Valid, low risk.**
+
+*Resolution (Technical).* Each leftover is assigned:
+
+| Leftover | Assigned to | Prerequisite for |
+|---|---|---|
+| `@ApplicationModuleTest` smoke tests per module | Phase 3, first PR | Phase 5 (each module's scoping PR adds its own module test) |
+| Spring Modulith Documenter output | Phase 1, as part of ADR acceptance; generated into `docs/architecture/modules/` by a test | Nothing; documentation only |
+| `event_publication` registry | The first phase that introduces an **after-commit or asynchronous** internal listener. Today's internal events (`UserRegistered`, `MerchantDeleting`) are synchronous and in-transaction, so they need no registry. Expected: Phase 3 (`PlanChanged` with workspace payload) | That listener |
+| `AdminMetricsRepository` string JPQL across modules | Stays a **named exception** in `ModularityTest`, with a test that fails if a second such class appears. Removed in Phase 5, when each module exposes its own counts (16.9) | Phase 5 completion |
+
+*Acceptance criteria.* The table is reflected in the Phase 2 status note and in Phases 1, 3 and 5; the `AdminMetricsRepository` exception test exists before Phase 3 starts.
+
+##### REV-9: outbox contract too skeletal. **Valid. It also hides a contradiction in the deletion transaction.**
+
+*Contradiction found while assessing it.* 19.3 step 5 says "delete tokens, enqueue `REVOKE_PROVIDER_TOKEN`". Revoking an Akahu authorisation needs the token. A task enqueued after its token was deleted cannot run.
+
+*Resolution (Technical).* Minimum outbox contract, added to 17 and 19.3:
+
+- Columns: `id`, `kind`, `payload_version`, `payload` (JSON, minimal), `idempotency_key UNIQUE`, `status` (PENDING, IN_PROGRESS, DONE, FAILED), `attempts`, `max_attempts`, `next_attempt_at`, `locked_until`, `last_error`, `created_at`, `done_at`.
+- Enqueue in the same transaction as the business change.
+- Claim: a short transaction selects due PENDING rows (or IN_PROGRESS rows whose `locked_until` passed) `FOR UPDATE SKIP LOCKED`, sets IN_PROGRESS and `locked_until = now() + 5 min`, commits. The external call runs with no transaction open. A second short transaction records the outcome.
+- Delivery is at least once. Handlers are idempotent: the Stripe call sends the task's `idempotency_key` as Stripe's `Idempotency-Key`; "already deleted" or "resource missing" from Stripe, and "token already revoked or invalid" from Akahu, count as success.
+- Retry: network errors, timeouts, 429 and 5xx retry with exponential backoff and jitter, capped at 6 hours, up to `max_attempts` (default 20). Other 4xx are terminal at once.
+- Terminal failure sets FAILED, raises an admin alert and shows in the admin console with a manual "retry" action that resets `attempts`. No automatic deletion of FAILED tasks.
+- `REVOKE_PROVIDER_TOKEN` carries the token **encrypted** with the existing connector cipher. The payload is overwritten with an empty object when the task reaches DONE or FAILED, so the token does not outlive the task. Before the deletion transaction, the use case also attempts revocation directly (outside any lock); the outbox task is the retry path, and it is idempotent if the first attempt already succeeded.
+- Payloads never contain a user's name, email or financial data; only ids and, for this one kind, the encrypted token. Rows are purged 30 days after DONE.
+- Wording rule: no status, admin screen or document may call external cleanup "complete" while a task is PENDING, IN_PROGRESS or FAILED.
+
+*Affected.* 17, 19.2, 19.3, 21, TD-4, Phase 0b (and Phase 3 platform work).
+
+*Acceptance criteria.* Two workers never run the same task (concurrency test with two claimers); a worker killed mid-call leaves the task re-claimable after `locked_until`; a 500 then 200 sequence ends DONE after two attempts; a 400 ends FAILED with an alert; the token payload is empty after DONE and after FAILED; the Akahu revoke handler succeeds when the token is already revoked.
+
+##### REV-10: readiness summary understates open invariants. **Partly valid.**
+
+*Challenge.* The review asks that a phase not be called ready while a finding that blocks it is open. That mixes two things. "Ready to implement" means the phase's specification is complete enough to start. "Done" means its acceptance criteria pass. REV-5 is the **content** of Phase 0a, not a reason not to start it: its resolution is the work. Phase 0a is therefore ready to implement, with REV-5's criteria as part of its definition of done.
+
+*Valid.* Phase 0b was labelled "partly ready" without the race of REV-2 and without an outbox contract (REV-9), and 6b and 6c did not list the matching contract (REV-1) or the mapping lifecycle (REV-6, REV-7). 28.2 is updated accordingly.
+
+#### 28.4.2 Contradictions and missing guarantees found during this assessment
+
+| # | Where | Contradiction or missing guarantee | Fixed by |
+|---|---|---|---|
+| X-1 | 11.4 against 11.8 | Counts and sums against multiset equality; counts and sums accept different amounts | REV-1 contract |
+| X-2 | 11.4, 11.8 | "Order of appearance" pairing inside ambiguous buckets drives later provider updates and removals onto wrong rows | REV-1 contract |
+| X-3 | 13.3, 19.2, 20 | Open Checkout Sessions can create a subscription Stripe-side after deletion; no local lock can prevent it | REV-2 steps 2 and 4 |
+| X-4 | 14 against 12.2 | Token boundary and consolidated reads both stated as absolute | REV-3 matrix |
+| X-5 | 17 against 9.2 | Owner trigger refers to an "ACTIVE workspace"; workspaces have no status | REV-4 |
+| X-6 | 17 | `user_id ON DELETE SET NULL` against "null only for pending invites" | REV-4 (RESTRICT, explicit deletion) |
+| X-7 | 11.5 | Sync unit writes under a mapping read before the fetch; a member who left can still feed the Household | REV-6, step 3a |
+| X-8 | 19.3 step 5 | Token deleted before the revoke task that needs it | REV-9 |
+| X-9 | 8 | "Workspace in which the user is reviewing it" is not a rule | REV-7 |
+| X-10 | 13.3 | "Runs again inside the deletion request" suggested an in-transaction check, which AP-8 forbids; the real guarantee needs the mark and the post-lock comparison | REV-2 steps 1 and 3 |
+| X-11 | 4.8 / D-30 against REV-5 | User erasers are implemented; only workspace erasers and the coverage test are proposed | Noted in REV-5 |
+
+#### 28.4.3 Decisions requiring Lionel's approval
+
+None of these was decided here. Each has a recommendation.
+
+| ID | Question | Recommendation | Alternatives and trade-offs | Implications | Blocks |
+|---|---|---|---|---|---|
+| U9 (existing) | A member leaves or is removed: what happens to their source accounts feeding Household accounts? | (a) Unmap in the same transaction, failover to a STANDBY, otherwise freeze the account | (b) Keep feeding until the user unmaps: a non-member's bank data keeps flowing into a Household they left | Security: (b) lets someone outside the Household keep writing into it. Financial: (a) can freeze a joint account until another member connects. Operational: (a) is one defined use case | Phase 7a |
+| U17 (existing, new role) | After deletion, delete the Stripe customer or keep it? | (a) Delete. It is now also the backstop that cancels any subscription created by a race (REV-2) | (b) Keep the customer and cancel all its subscriptions immediately instead: same billing guarantee, keeps invoice history attached to a customer | Legal: AS-8 must be verified before (a) ships. Either option meets the billing guarantee | Phase 0b |
+| U21, U38, U19, U14, U30 (existing) | As in 24.3 | Unchanged | Unchanged | REV-2 does not change them | Phases 0a and 0b |
+| U39 (new) | On days with several identical amounts, accept more review items in exchange for never pairing them silently? | Yes, with the grouped one-click "they are the same" resolution | Pair automatically by order of appearance (the earlier text): fewer items, but silent crossed links that later misapply provider corrections | Financial correctness against review fatigue | Phase 6b |
+| U40 (new) | May an MCP grant or REST token ever act on a COLLABORATOR grant? | No for the first release | Yes, with a separate consent line: more agent reach, larger token blast radius | Security: tokens stay "one workspace plus read-only aggregates" | Phase 7b |
+| U41 (new) | While a deletion is in progress (up to 15 minutes), checkout is refused. Acceptable copy: "Account deletion in progress"? | Yes | No visible message (generic error) | UX only | Phase 0b |
+
+#### 28.4.4 Final readiness assessment
+
+What is genuinely implementable today, without any further decision:
+
+- **Phase 0a**, with REV-5's definition of done. The feedback part needs U14 and the deleted-id list needs U30; both can follow as separate PRs.
+- **Phase 0c**, the H7 plan change, after AS-15.
+
+What blocks everything else, exactly:
+
+1. **Phase 0b** is blocked by: TD-4 confirmation with the REV-9 contract; U21 and U38 (eligibility table); U17 and AS-8 (the backstop of REV-2); U19 (admin route, or the explicit block until decided); U41 (copy). The REV-2 protocol itself is specified and is no longer a blocker.
+2. **Phase 1 (acceptance)** is blocked by Lionel's review of this assessment and of 28.3, and by the 24.3 and 24.4 items already listed for Phase 1. The ADR must not be marked Accepted while any High finding is unresolved; after this assessment, REV-1 to REV-5 and REV-7 to REV-10 have a specified resolution, and REV-6 waits only on U9.
+3. **Phases 3 to 5** additionally need the REV-3 matrix and the REV-4 integrity contract reflected in their migrations and tests. Both are specified here.
+4. **Phases 6b and 6c** additionally need U39 and the REV-1, REV-6 step 3a and REV-7 rules.
+5. **Phase 7a** needs U9.
+
+The ADR remains **Proposed**. No implementation beyond Phase 0a and the H7 plan change is ready to start.
+
+---
 
 ## Appendix A: Confirmed decisions
 
