@@ -1545,7 +1545,7 @@ flowchart LR
 | Item | State |
 |---|---|
 | fern-funds PR #791 (`feat/phase-0a-deletion-integrity`, head `285bf9af`) | Erasers for the D3 tables and eight more, `HOLDINGS` before `ACCOUNTS`, user-row lock, first tests, read-only check script. CI **passed** (backend `mvn verify` 9 min 8 s, frontend, admin console). **Not merged** |
-| fern-funds remediation PR #792 (branch `feat/phase-0a-remediation`, head `d68d80fe`, built on #791) | Schema-driven seeding, FK-order check, write fence (V174), OAuth and mutation tests, cleanup inside V174. **Not merged** |
+| fern-funds remediation PR #792 (branch `feat/phase-0a-remediation`, head `d68d80fe`, plus a report-label fix after it, built on #791) | Schema-driven seeding, FK-order check, write fence (V174), OAuth and mutation tests, cleanup inside V174. **Not merged** |
 | Production | Still runs the old deletion. No write was executed by this work. V174 runs on production only when the remediation PR is merged and deployed |
 
 *Mechanism.*
@@ -1579,8 +1579,8 @@ flowchart LR
 | SavedQueryEraser | SAVED_QUERIES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_saved_query_owner_user" on table "saved_query" | detected |
 | BalanceAssertionEraser | BALANCE_ASSERTIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_balance_assertion_owner_user" on table "balance_assertion" | detected |
 | RecurringSeriesEraser | RECURRING_SERIES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_recurring_series_owner_user" on table "recurring_series" | detected |
-| TransactionTagsEraser | TRANSACTION_TAGS | eraser removed from the deletion chain | nothing; redundant: transaction_tag has ON DELETE CASCADE from transaction | detected |
-| EventLinksEraser | EVENT_LINKS | eraser removed from the deletion chain | nothing; redundant: event_transactions is the join table of Event, and JPA removes its rows when EventEraser deletes the events through the repository | detected |
+| TransactionTagsEraser | TRANSACTION_TAGS | eraser removed from the deletion chain | nothing; redundant: transaction_tag has ON DELETE CASCADE from transaction | not detected, redundant by design |
+| EventLinksEraser | EVENT_LINKS | eraser removed from the deletion chain | nothing; redundant: event_transactions is the join table of Event, and JPA removes its rows when EventEraser deletes the events through the repository | not detected, redundant by design |
 | TransactionAssociationEraser | TRANSACTION_ASSOCIATIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "transaction" violates foreign key constraint "fk_transaction_association_source" on table "transaction_association" | detected |
 | RetiredLedgerEraser | RETIRED_LEDGER | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_ledger_node_owner" on table "ledger_node" | detected |
 | LoanEraser | LOANS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_loan_group_owner_user" on table "loan_group" | detected |
