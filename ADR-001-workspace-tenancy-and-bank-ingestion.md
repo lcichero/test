@@ -337,6 +337,7 @@ erDiagram
         string external_record_id
         bigint import_job_id FK
         string reconciliation_outcome
+        string match_basis
         bigint workspace_id FK
     }
     API_TOKEN {
@@ -561,7 +562,7 @@ Transaction status: `ACTIVE`, `USER_EXCLUDED` (11.7), `REMOVED_BY_PROVIDER`. Eve
 | Provider deletes a transaction | Within the fetched window, a link not returned for two consecutive syncs marks its transaction `REMOVED_BY_PROVIDER` (soft); never hard-deleted automatically |
 | Reversal | A separate bank transaction; imported normally; refund linking stays a Money Records concern |
 | Historical import on reconnect or relink | Same path; links prevent re-import from the same source account; a new source account (new ids) for an account that already has history uses the **overlap boundary** below |
-| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; apply the matching contract of 28.4 (REV-1 revision 2): provider continuity links automatically; a failover day links automatically only when it passes the day-complete test (`match_basis = DAY_COMPLETE`, undoable); everything else becomes `AMBIGUOUS` review items. Per-day counts and sums are only a pre-check, never a basis for a link. A match against a `USER_EXCLUDED` transaction keeps it excluded |
+| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; apply the matching contract of 28.4 (REV-1 revision 3): provider continuity links automatically; failover overlap is `AMBIGUOUS` by default. `DAY_COMPLETE` auto-linking is disabled unless U39(a) is explicitly approved; if enabled, it is heuristic, auditable and undoable Per-day counts and sums are only a pre-check, never a basis for a link. A match against a `USER_EXCLUDED` transaction keeps it excluded |
 | Akahu `_migrated` transactions | Link added for the new id against the transaction whose link equals `_migrated`; no new row |
 
 Confirmation of the re-issue handling (review item, no automatic merge) is `PENDING` (U37). Removal detection follows D-34 (11.5).
@@ -658,7 +659,7 @@ A separate tombstone table is rejected: the link already identifies the source r
 Several sources may map to one internal account (Q7): a live feed, a CSV of the same account, a later second provider.
 
 - **Coverage.** The covered range of a live-feed SOURCE source account is from the date of its earliest linked record to the date of its last successful sync. Ranges are stored per source account and recomputed at commit of each unit.
-- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. It follows the **matching contract** of 28.4 (REV-1 revision 2): a file or a different provider is tier 3, so it **never** links automatically inside a covered range; it proposes pairs (ordered by description similarity, which is a heuristic and never an identity) in `AMBIGUOUS_MATCH` items that the user confirms, one by one or in bulk. Amounts are compared only in the account currency as settled, never converted; different currencies never match. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
+- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. It follows the **matching contract** of 28.4 (REV-1 revision 3): a file or a different provider is tier 3, so it **never** links automatically inside a covered range; it proposes pairs (ordered by description similarity, which is a heuristic and never an identity) in `AMBIGUOUS_MATCH` items that the user confirms, one by one or in bulk. Amounts are compared only in the account currency as settled, never converted; different currencies never match. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
 - **Known limitation.** Banks and files can date the same transaction differently (posting date against transaction date). Such rows will not match exactly and will arrive as review items instead of duplicates. The user resolves them; FOFI never guesses.
 - **Re-imports.** A file row that already has a link on the same source account is skipped, whatever its outcome. The identity of rows without an id is `PENDING` (TD-6).
 
@@ -806,7 +807,7 @@ What counts as "can renew or charge again" (applies P1 to Stripe states):
 
 Technical design (this ADR):
 
-- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request, before the deletion transaction, as part of the deletion protocol of 28.4 (REV-2 revision 2): mark the deletion, refuse new checkouts, expire open Checkout Sessions, check all subscriptions, then **before** any local erasure cancel what is left, delete the customer (U17 a) or strip its payment methods (U17 b), and verify against Stripe that nothing can charge; only then lock the user row, compare recorded webhooks, and erase. No Stripe cleanup is left to the outbox in the normal path.
+- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request, before the deletion transaction, as part of the deletion protocol of 28.4 (REV-2 revision 3): mark the deletion, refuse new checkouts, neutralize all billing surfaces (subscriptions, schedules, sessions including async payments, invoices/PaymentIntents, pending invoice items and auto-advance), verify exhaustively, then **before** local erasure lock the user row, compare recorded webhooks, and erase. The detailed protocol remains blocked until provider behavior is verified No Stripe cleanup is left to the outbox in the normal path.
 - `subscription` gains Stripe `status`, `cancel_at_period_end` and `cancel_at`, synced from webhooks, for display only (fixes D6).
 - Every Stripe webhook handler ignores events whose owner id no longer exists and never creates or extends an entitlement for it (fixes D5). An event that would grant or renew access for a missing owner enqueues an immediate Stripe cancellation and raises an admin alert for manual refund review. This is defensive only, never part of the normal path.
 
@@ -1118,7 +1119,9 @@ CREATE TABLE source_account (...);           -- from akahu_account, see 10.3 and
 CREATE TABLE transaction_source_link (...);  -- see 11.1 and 11.6
 CREATE TABLE pending_transaction (...);      -- see 11.3
 CREATE TABLE workspace_audit_event (...);    -- see 9.4
-CREATE TABLE outbox_task (id, kind, payload, attempts, next_attempt_at, last_error, done_at);  -- see 19, TD-4
+CREATE TABLE outbox_task (id, kind, payload, payload_version, state, attempts, next_attempt_at, lease_token, lease_until, destroy_after, terminal_reason, last_error, created_at, updated_at, done_at);  -- see 19, TD-4, REV-9 revisions 2–3
+CREATE TABLE outbox_secret (task_id PK/FK, key_id, ciphertext, created_at, destroy_after);  -- secret-only worker access
+CREATE TABLE outbox_operator_action (...);  -- audited admin Retry/Abandon
 CREATE TABLE ingestion_review_item (...);    -- see 11.9
 CREATE TABLE shedlock (...);                 -- lease table, TD-5
 CREATE TABLE event_publication (...);        -- Spring Modulith registry, Phase 2
@@ -1129,7 +1132,7 @@ ALTER TABLE subscription ADD COLUMN cancel_at_period_end BOOLEAN;
 ALTER TABLE subscription ADD COLUMN cancel_at TIMESTAMP;
 ```
 
-A deferred constraint trigger on `workspace_membership` rejects a commit that leaves a workspace **that still exists** with zero or several ACTIVE OWNERs (workspaces have no status, 9.2). The full integrity contract (immutable `workspace.type`, composite FK `(workspace_id, workspace_type)`, single-member PERSONAL index, `user_id` CHECK and `ON DELETE RESTRICT`) is in 28.4 (REV-4) and supersedes the `ON DELETE SET NULL` sketch above. The outbox contract, including `outbox_secret` and `outbox_operator_action`, is in 28.4 (REV-9 revision 2). Deletion adds `users.deletion_requested_at`, `users.deletion_attempt_id` and `stripe_customer.remote_closed_at` (REV-2 revision 2). `transaction_source_link` adds `match_basis` (REV-1 revision 2). Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
+A deferred constraint trigger on `workspace_membership` rejects a commit that leaves a workspace **that still exists** with zero or several ACTIVE OWNERs (workspaces have no status, 9.2). The full integrity contract (immutable `workspace.type`, composite FK `(workspace_id, workspace_type)`, single-member PERSONAL index, `user_id` CHECK and `ON DELETE RESTRICT`) is in 28.4 (REV-4) and supersedes the `ON DELETE SET NULL` sketch above. The outbox contract, including `outbox_secret`, `outbox_operator_action`, all-state expiry and worker fencing, is in 28.4 (REV-9 revision 3). Deletion adds `users.deletion_requested_at`, `users.deletion_attempt_id` and `stripe_customer.remote_closed_at` (REV-2 revisions 2–3). `transaction_source_link` adds `match_basis` (REV-1 revisions 2–3; DAY_COMPLETE disabled by default). Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
 
 ## 18. Migration strategy
 
@@ -1205,7 +1208,7 @@ One database transaction:
 2. For each HOUSEHOLD the user OWNS: dissolve it and erase all its data through the module erasers, delete its memberships and grants, and unmap other members' source accounts from it (their connections stay; connections belong to users) (Q1).
 3. For each other HOUSEHOLD membership: end the membership; Household data stays.
 4. Delete every COLLABORATOR grant the user gave or received.
-5. For each connection: mark REVOKED, enqueue `REVOKE_PROVIDER_TOKEN` with the token encrypted in `outbox_secret` (kept while the task can still be retried, destroyed on DONE or ABANDONED, REV-9 revision 2; a direct revoke was already attempted before the transaction), then delete the stored tokens; fail over partner STANDBY source accounts where applicable.
+5. For each connection: mark REVOKED, enqueue `REVOKE_PROVIDER_TOKEN` with the token encrypted in `outbox_secret` (kept only while retryable and before destroy_after; destroyed on DONE or ABANDONED, REV-9 revision 3; a direct revoke was already attempted before the transaction), then delete the stored tokens; fail over partner STANDBY source accounts where applicable.
 6. Erase the PERSONAL workspace: per workspace with an explicit `WorkspaceScope`, delete through each module's `WorkspaceDataEraser`, including blobs by owning entity (transaction attachments, receipt photos, feedback images), not by receipt only.
 7. Delete identity and billing rows (tokens, OAuth, 2FA, preferences, `subscription`, `beta_access`, `stripe_customer`). Feedback submissions are handled per U14 (`PENDING`: delete, or anonymize).
 8. Clear `actor_label` on audit rows of surviving workspaces; `created_by` becomes null through `ON DELETE SET NULL`.
@@ -1742,7 +1745,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2 revision 3) and outbox contract (REV-9 revision 3) are not proven complete; Stripe status fields and webhook guard can start, but billing erasure cannot ship | TD-4 with the REV-9 revision 2 contract and keyring; U21, U38 (eligibility); U17 and AS-8 (privacy choice); AS-16 and U42 (REV-2 revision 2); U19 (admin route); U3 (OWNER warning text); U41 |
+| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2 revision 3) and outbox contract (REV-9 revision 3) are not proven complete; Stripe status fields and webhook guard can start, but billing erasure cannot ship | TD-4 with the REV-9 revision 3 contract and keyring; U21, U38 (eligibility); U17 and AS-8 (privacy choice); AS-16 and U42 (REV-2 revision 3); U19 (admin route); U3 (OWNER warning text); U41 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
