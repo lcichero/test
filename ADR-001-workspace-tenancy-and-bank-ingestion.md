@@ -90,8 +90,8 @@ Re-verified on 2026-11-04, and again on 2026-11-15 after PR #716 and the Spring 
 | D1 | **Fixed (PR #716, 2026-11-08).** Deleting a household owner failed on `household_owner_id_fkey`, and a member on `household_membership_user_id_fkey`. The household rows are now erased in the deletion (step `HOUSEHOLDS`, `ledger/household/HouseholdEraser`): an owner takes their household, shares and every membership in it; a member takes only their own membership. Dissolution as a separate use case still does not exist | `AccountDeletionServiceTest` (`deleteAccountAsAdmin_householdOwner_...`, `..._householdMember_...`) | Fixed |
 | D2 | **Fixed.** The `subscription` row is erased in the deletion (step `SUBSCRIPTION`, `subscription/SubscriptionEraser`) | `AccountDeletionServiceTest`, `deleteAccountAsAdmin_removesTheSubscription` | Fixed |
 | D3 | **Partly fixed.** Transaction-attachment blobs, receipt photos (including the extra photos of a long receipt) and the uploaded avatar are now deleted through `AttachmentStorage` (step `STORED_FILES`). **Still not deleted and no cascade path, re-verified 2026-11-15:** `stripe_customer`, `beta_access`, `dashboard` (with `dashboard_component` and `dashboard_widget` by cascade), `saved_query`, `feedback_submission` (with `feedback_message` and `feedback_message_image` by cascade, and their image blobs), `balance_assertion` and `holding_transaction` (no FK at all), and `recurring_series` rows without `merchant_id` or `sub_category_id` | `security/ErasureStep.java` (no step for these tables); `V62`, `V65`, `V67`, `V81`, `V82`, `V88`, `V99`, `V106`, `V109`; [E3 review](ADR-001-review-e3-e4.md) section 1.2 | Partly confirmed open |
-| D3b | Probable deletion failure: `holding.account_id` has an FK without cascade (`V92`), and the erasure still deletes accounts (step `ACCOUNTS`) before holdings (step `HOLDINGS`). The deletion test seeds no holding linked to an account, so it cannot catch it | `V92__add_account_id_to_holding.sql`; `security/ErasureStep.java` order | Not yet tested |
-| D3c | Extra receipt photos and feedback image blobs | `storage/impl/DbAttachmentStorage.java` | Unknown; needs a test |
+| D3b | **Fixed on an unmerged branch (2026-11-15): `HOLDINGS` now precedes `ACCOUNTS`, and the generic FK-order test checks every foreign key.** Earlier finding: probable deletion failure: `holding.account_id` has an FK without cascade (`V92`), and the erasure still deletes accounts (step `ACCOUNTS`) before holdings (step `HOLDINGS`). The deletion test seeds no holding linked to an account, so it cannot catch it | `V92__add_account_id_to_holding.sql`; `security/ErasureStep.java` order | Not yet tested |
+| D3c | **Partly closed (2026-11-15):** every `*storage_key` column of a non-kept table is seeded with a real stored file and checked after deletion; feedback images are kept under U14. Earlier finding: extra receipt photos and feedback image blobs | `storage/impl/DbAttachmentStorage.java` | Unknown; needs a test |
 | D4 | **Defect, confirmed by code reading:** no Stripe call exists anywhere except customer retrieve and create; an active paid Stripe subscription keeps billing after deletion. Cancellation happens only in the Stripe-hosted portal | `AccountDeletionService` has no Stripe dependency; `connectors/stripe/StripeBillingClient.java`; `StripeCheckoutService.createBillingPortalSession` | Confirmed |
 | D5 | **Defect, confirmed by code reading:** `invoice.paid` re-creates a `subscription` row for a deleted owner id, because the owner is read from Stripe metadata `ownerId` and `upsertSubscription` never checks that the user exists | `connectors/stripe/StripeSubscriptionSyncService.handleInvoicePaid`, `upsertSubscription` | Confirmed |
 | D6 | FOFI cannot tell whether a subscription will renew: `Subscription` stores plan, cycle, `expires_at`, source and `source_ref`, but not Stripe `status`, `cancel_at_period_end` or `cancel_at`; `active` and `trialing` are treated alike | `subscription/Subscription.java`; `StripeSubscriptionSyncService.syncEntitledSubscription`, `isEntitledStatus`, `isEndedStatus` | Confirmed |
@@ -1536,6 +1536,339 @@ flowchart LR
 - **Rollout and rollback:** normal deploy; FK migrations are reversible by dropping the constraints.
 - **Done:** all tests green; production pre-check script run and reported.
 
+#### Phase 0a implementation status (2026-11-15)
+
+> Recorded from what was implemented and executed, not from intent. The phase text above is unchanged. **Implemented** means code exists on a branch; **executed** means the test ran and passed on the stated run; **independently verified** means checked by someone other than the implementer, which has **not** happened yet for this work.
+
+*Where the work is.*
+
+| Item | State |
+|---|---|
+| fern-funds PR #791 (`feat/phase-0a-deletion-integrity`, head `285bf9af`) | Erasers for the D3 tables and eight more, `HOLDINGS` before `ACCOUNTS`, user-row lock, first tests, read-only check script. CI **passed** (backend `mvn verify` 9 min 8 s, frontend, admin console). **Not merged** |
+| fern-funds remediation PR #792 (branch `feat/phase-0a-remediation`, head `d68d80fe`, built on #791) | Schema-driven seeding, FK-order check, write fence (V174), OAuth and mutation tests, cleanup inside V174. **Not merged** |
+| Production | Still runs the old deletion. No write was executed by this work. V174 runs on production only when the remediation PR is merged and deployed |
+
+*Mechanism.*
+
+1. **Coverage computed from the schema.** `PersonalDataSeeder` (test code) builds the set of personal tables from the migrated PostgreSQL schema: every table with `owner_id`, `user_id` or `household_owner_id`, every table with a foreign key to `users`, and every table that reaches one of those through foreign keys (tags, join tables, images, snapshots, OAuth codes and tokens). It inserts one row in each, with real stored files for every `*storage_key` column. A new migration that adds such a table is seeded automatically, so `AccountDeletionSchemaTest` fails until deletion covers it or it is listed as kept on purpose with its decision.
+2. **Ordering checked against `pg_constraint`.** The erasers run one at a time; the step at which each seeded row disappears is recorded; every foreign key without `ON DELETE CASCADE` or `SET NULL` must point from a table erased in the same or an earlier step to its target.
+3. **Write fence enforced by PostgreSQL.** Migration `V174__owner_foreign_keys_to_users.sql` adds a foreign key to `users` on the 46 owner tables that had none, after deleting rows whose owner no longer exists (children before parents). Deletion locks the users row with a native `SELECT ... FOR UPDATE` (JPA's `PESSIMISTIC_WRITE` is `FOR NO KEY UPDATE` on PostgreSQL, which does **not** conflict with the key-share lock of a foreign-key check; this was found by the race test and fixed). Result: a write that started first commits and is then erased; a write that starts during deletion waits and fails; a write after commit fails. The fence lives in the database, so it holds across application instances.
+
+*Production cleanup through V174 (owner instruction, 2026-11-15).* The owner asked for the orphan cleanup to be a Flyway migration that runs on production. V174 therefore deletes rows of non-existent owners in every table it constrains. A read-only check on production at 2026-11-15 09:03:32 UTC, repeated over all 46 tables, found rows only in `dashboard` (4 rows) and `dashboard_widget` (27 rows), for 4 missing user ids; every other table had 0. Earlier read-only check at about 08:55 UTC over 18 tables gave the same dashboard numbers. **These rows have not been deleted yet**; they will be when V174 runs. This supersedes for the cleanup part the earlier wording that cleanup "waits for the owner" (U46 cleanup approved by the owner; the FK part is implemented by V174).
+
+*Executed test results.*
+
+| Run | Command | Result |
+|---|---|---|
+| Local, remediation branch, 2026-11-15 | `mvn verify` | Exit 0, BUILD SUCCESS, 4356 tests, 0 failures, 0 errors, 0 skipped, 4 min 57 s |
+| Same run, per class | | `AccountDeletionSchemaTest` 3/3, `AccountDeletionEraserMutationTest` 1/1, `AccountDeletionConcurrencyTest` 6/6, `AccountDeletionCoverageTest` 3/3, `AccountDeletionServiceTest` 10/10, `DeletedAccountAccessTest` 2/2, `OAuthFlowIntegrationTest` 17/17, `AdminUserServiceTest` 27/27, `AdminUserControllerTest` 14/14, `AdminFeedbackDeletionServiceTest` 4/4, `AssetAccountDeletionTest` 1/1, `ModularityTest` 5/5 |
+| CI, PR #791 head `285bf9af` | GitHub Actions | Backend `mvn verify` passed (9 min 8 s); frontend and admin console passed |
+| CI, remediation PR #792 | GitHub Actions | Not run: the PR targets the #791 branch, not `master`; CI result **not available** |
+| Earlier local full run on the remediation branch | `mvn verify` | Failed once: `LoanPropertyAssetBackfillTest` inserted a loan group for owner 987654, which has no users row; V174 rejected it, as intended. The test now keeps its NZD-fallback scenario through a lookup that returns nothing |
+
+*Mutation check.* Each eraser was removed from the deletion chain in turn (an in-process mutation: the eraser is left out of the list the deletion service runs; the source is not edited), with a freshly seeded person, inside a rolled-back transaction:
+
+| Eraser | Step | Mutation performed | What caught it | Result |
+|---|---|---|---|---|
+| BetaAccessEraser | BETA_ACCESS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_beta_access_owner_user" on table "beta_access" | detected |
+| StripeCustomerRowEraser | STRIPE_CUSTOMER_ROW | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_stripe_customer_owner_user" on table "stripe_customer" | detected |
+| AiCreditUseEraser | AI_CREDITS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_ai_credit_use_owner_user" on table "ai_credit_use" | detected |
+| GroceryEraser | GROCERY | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_chef_message_owner_user" on table "chef_message" | detected |
+| ReceiptProductRulesEraser | RECEIPT_PRODUCT_RULES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_receipt_product_category_owner_user" on table "receipt_product_category" | detected |
+| DashboardEraser | DASHBOARDS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_dashboard_widget_owner_user" on table "dashboard_widget" | detected |
+| SavedQueryEraser | SAVED_QUERIES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_saved_query_owner_user" on table "saved_query" | detected |
+| BalanceAssertionEraser | BALANCE_ASSERTIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_balance_assertion_owner_user" on table "balance_assertion" | detected |
+| RecurringSeriesEraser | RECURRING_SERIES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_recurring_series_owner_user" on table "recurring_series" | detected |
+| TransactionTagsEraser | TRANSACTION_TAGS | eraser removed from the deletion chain | nothing; redundant: transaction_tag has ON DELETE CASCADE from transaction | detected |
+| EventLinksEraser | EVENT_LINKS | eraser removed from the deletion chain | nothing; redundant: event_transactions is the join table of Event, and JPA removes its rows when EventEraser deletes the events through the repository | detected |
+| TransactionAssociationEraser | TRANSACTION_ASSOCIATIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "transaction" violates foreign key constraint "fk_transaction_association_source" on table "transaction_association" | detected |
+| RetiredLedgerEraser | RETIRED_LEDGER | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_ledger_node_owner" on table "ledger_node" | detected |
+| LoanEraser | LOANS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_loan_group_owner_user" on table "loan_group" | detected |
+| NotificationEraser | NOTIFICATIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_notification_owner_user" on table "notification" | detected |
+| HouseholdEraser | HOUSEHOLDS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "household_owner_id_fkey" on table "household" | detected |
+| SubscriptionEraser | SUBSCRIPTION | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_subscription_owner_user" on table "subscription" | detected |
+| AssetEraser | ASSETS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_asset_valuation_owner_user" on table "asset_valuation" | detected |
+| EventEraser | EVENTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_events_owner" on table "events" | detected |
+| TransactionAttachmentFilesEraser | STORED_FILES | eraser removed from the deletion chain | rows left: [file transaction_attachment.storage_key] | detected |
+| ReceiptFilesEraser | STORED_FILES | eraser removed from the deletion chain | rows left: [file receipt.storage_key, file receipt_photo.storage_key] | detected |
+| AvatarFileEraser | STORED_FILES | eraser removed from the deletion chain | rows left: [file users.avatar_storage_key] | detected |
+| ReceiptReaderCallEraser | RECEIPT_READER_CALLS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_receipt_reader_call_owner_user" on table "receipt_reader_call" | detected |
+| CoachEraser | COACH | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_coach_message_owner_user" on table "coach_message" | detected |
+| ReceiptEraser | RECEIPTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_receipt_line_owner_user" on table "receipt_line" | detected |
+| TransactionEraser | TRANSACTIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "merchant" violates foreign key constraint "transaction_merchant_id_fkey" on table "transaction" | detected |
+| MerchantEraser | MERCHANTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "sub_category" violates foreign key constraint "merchant_default_sub_category_id_fkey" on table "merchant" | detected |
+| ImportHistoryEraser | IMPORT_HISTORY | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_import_history_owner_user" on table "import_history" | detected |
+| CsvImportEraser | CSV_IMPORTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "account" violates foreign key constraint "fk_csv_import_profile_default_account" on table "csv_import_profile" | detected |
+| CategoryItemEraser | CATEGORY_ITEMS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "sub_category" violates foreign key constraint "fk_category_item_sub_category" on table "category_item" | detected |
+| BudgetCategoryLinkEraser | BUDGET_CATEGORY_LINKS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "sub_category" violates foreign key constraint "fk_bec_sub_category" on table "budget_envelope_category" | detected |
+| CategoryEraser | CATEGORIES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_category_owner" on table "category" | detected |
+| BudgetEnvelopeEraser | BUDGET_ENVELOPES | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_budget_envelope_owner" on table "budget_envelope" | detected |
+| GoalEraser | GOALS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_goal_contribution_owner_user" on table "goal_contribution" | detected |
+| LoanPlanEraser | LOAN_PLANS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_loan_plan_scenario_owner_user" on table "loan_plan_scenario" | detected |
+| AkahuAccountEraser | BANK_FEED_ACCOUNTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_akahu_account_owner_user" on table "akahu_account" | detected |
+| HoldingEraser | HOLDINGS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "account" violates foreign key constraint "holding_account_id_fkey" on table "holding" | detected |
+| AccountEraser | ACCOUNTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "institution" violates foreign key constraint "fk_account_institution" on table "account" | detected |
+| InstitutionEraser | INSTITUTIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_institution_owner" on table "institution" | detected |
+| AkahuConnectionEraser | BANK_FEED_CONNECTIONS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_user_akahu_connection_user" on table "user_akahu_connection" | detected |
+| SignInEraser | SIGN_IN | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_auth_token_user" on table "auth_token" | detected |
+| ForecastLabelEraser | FORECAST_LABELS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_forecast_item_label_owner_user" on table "forecast_item_label" | detected |
+| ApiTokenEraser | API_TOKENS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "api_token_owner_id_fkey" on table "api_token" | detected |
+| OAuthGrantEraser | OAUTH_GRANTS | eraser removed from the deletion chain | deletion refused: ERROR: update or delete on table "users" violates foreign key constraint "fk_oauth_grant_owner_user" on table "oauth_grant" | detected |
+
+*Generated report: personal-data tables, mechanisms and foreign keys (from the migrated PostgreSQL test schema).*
+
+<details><summary>Expand</summary>
+
+# Personal-data tables
+
+| Table | Mechanism |
+|---|---|
+| account | 35 ACCOUNTS (AccountEraser) |
+| account_balance_snapshot | 35 ACCOUNTS (AccountEraser) |
+| ai_credit_use | 02 AI_CREDITS (AiCreditUseEraser) |
+| akahu_account | 33 BANK_FEED_ACCOUNTS (AkahuAccountEraser) |
+| api_token | 40 API_TOKENS (ApiTokenEraser) |
+| asset_valuation | 17 ASSETS (AssetEraser) |
+| auth_token | 38 SIGN_IN (SignInEraser) |
+| balance_assertion | 07 BALANCE_ASSERTIONS (BalanceAssertionEraser) |
+| beta_access | 00 BETA_ACCESS (BetaAccessEraser) |
+| budget_envelope | 30 BUDGET_ENVELOPES (BudgetEnvelopeEraser) |
+| budget_envelope_category | 28 BUDGET_CATEGORY_LINKS (BudgetCategoryLinkEraser) |
+| category | 29 CATEGORIES (CategoryEraser) |
+| category_item | 27 CATEGORY_ITEMS (CategoryItemEraser) |
+| chef_message | 03 GROCERY (GroceryEraser) |
+| chef_recipe | 03 GROCERY (GroceryEraser) |
+| coach_conversation | 21 COACH (CoachEraser) |
+| coach_message | 21 COACH (CoachEraser) |
+| coach_prompt | 21 COACH (CoachEraser) |
+| csv_import_file_snapshot | 26 CSV_IMPORTS (CsvImportEraser) |
+| csv_import_profile | 26 CSV_IMPORTS (CsvImportEraser) |
+| dashboard | 05 DASHBOARDS (DashboardEraser) |
+| dashboard_component | 05 DASHBOARDS (DashboardEraser) |
+| dashboard_widget | 05 DASHBOARDS (DashboardEraser) |
+| event_transactions | 10 EVENT_LINKS (EventLinksEraser) |
+| events | 18 EVENTS (EventEraser) |
+| feedback_message | kept on purpose: U14, follows feedback_submission |
+| feedback_message_image | kept on purpose: U14, follows feedback_message |
+| feedback_submission | kept on purpose: U14: delete or anonymize a deleted person's feedback is undecided |
+| forecast_item_label | 39 FORECAST_LABELS (ForecastLabelEraser) |
+| goal | 31 GOALS (GoalEraser) |
+| goal_contribution | 31 GOALS (GoalEraser) |
+| grocery_ai_call | 03 GROCERY (GroceryEraser) |
+| grocery_aisle_choice | 03 GROCERY (GroceryEraser) |
+| grocery_item | 03 GROCERY (GroceryEraser) |
+| grocery_suggestion_skip | 03 GROCERY (GroceryEraser) |
+| holding | 34 HOLDINGS (HoldingEraser) |
+| holding_transaction | 34 HOLDINGS (HoldingEraser) |
+| holding_value_snapshot | 34 HOLDINGS (HoldingEraser) |
+| household | 15 HOUSEHOLDS (HouseholdEraser) |
+| household_membership | 15 HOUSEHOLDS (HouseholdEraser) |
+| household_resource_share | 15 HOUSEHOLDS (HouseholdEraser) |
+| import_history | 25 IMPORT_HISTORY (ImportHistoryEraser) |
+| institution | 36 INSTITUTIONS (InstitutionEraser) |
+| journal_entry | 12 RETIRED_LEDGER (RetiredLedgerEraser) |
+| ledger_node | 12 RETIRED_LEDGER (RetiredLedgerEraser) |
+| ledger_node_mapping | 12 RETIRED_LEDGER (RetiredLedgerEraser) |
+| loan | 13 LOANS (LoanEraser) |
+| loan_balance_snapshot | 13 LOANS (LoanEraser) |
+| loan_group | 13 LOANS (LoanEraser) |
+| loan_interest_period | 13 LOANS (LoanEraser) |
+| loan_min_payment_period | 13 LOANS (LoanEraser) |
+| loan_plan_scenario | 32 LOAN_PLANS (LoanPlanEraser) |
+| manual_asset | 17 ASSETS (AssetEraser) |
+| merchant | 24 MERCHANTS (MerchantEraser) |
+| merchant_pattern | 24 MERCHANTS (MerchantEraser) |
+| notification | 14 NOTIFICATIONS (NotificationEraser) |
+| notification_preference | 14 NOTIFICATIONS (NotificationEraser) |
+| oauth_access_token | 41 OAUTH_GRANTS (OAuthGrantEraser) |
+| oauth_authorization_code | 41 OAUTH_GRANTS (OAuthGrantEraser) |
+| oauth_grant | 41 OAUTH_GRANTS (OAuthGrantEraser) |
+| oauth_refresh_token | 41 OAUTH_GRANTS (OAuthGrantEraser) |
+| posting | 12 RETIRED_LEDGER (RetiredLedgerEraser) |
+| receipt | 22 RECEIPTS (ReceiptEraser) |
+| receipt_ignored_attachment | 22 RECEIPTS (ReceiptEraser) |
+| receipt_item_rule | 22 RECEIPTS (ReceiptEraser) |
+| receipt_line | 22 RECEIPTS (ReceiptEraser) |
+| receipt_photo | 22 RECEIPTS (ReceiptEraser) |
+| receipt_product_category | 04 RECEIPT_PRODUCT_RULES (ReceiptProductRulesEraser) |
+| receipt_product_link | 04 RECEIPT_PRODUCT_RULES (ReceiptProductRulesEraser) |
+| receipt_reader_call | 20 RECEIPT_READER_CALLS (ReceiptReaderCallEraser) |
+| recurring_series | 08 RECURRING_SERIES (RecurringSeriesEraser) |
+| recurring_series_previous_identity | 08 RECURRING_SERIES (RecurringSeriesEraser) |
+| saved_query | 06 SAVED_QUERIES (SavedQueryEraser) |
+| stripe_customer | 01 STRIPE_CUSTOMER_ROW (StripeCustomerRowEraser) |
+| sub_category | 29 CATEGORIES (CategoryEraser) |
+| subscription | 16 SUBSCRIPTION (SubscriptionEraser) |
+| transaction | 23 TRANSACTIONS (TransactionEraser) |
+| transaction_association | 11 TRANSACTION_ASSOCIATIONS (TransactionAssociationEraser) |
+| transaction_attachment | 23 TRANSACTIONS (TransactionEraser) |
+| transaction_tag | 09 TRANSACTION_TAGS (TransactionTagsEraser) |
+| two_factor_recovery_code | 38 SIGN_IN (SignInEraser) |
+| user_akahu_connection | 37 BANK_FEED_CONNECTIONS (AkahuConnectionEraser) |
+| user_oauth_account | 38 SIGN_IN (SignInEraser) |
+
+# Foreign keys
+
+| Referencing | Referenced | Columns | On delete | Step of referencing | Step of referenced | OK |
+|---|---|---|---|---|---|---|
+| sub_category | category | category_id | NO ACTION | 29 CATEGORIES (CategoryEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| category_item | sub_category | sub_category_id | NO ACTION | 27 CATEGORY_ITEMS (CategoryItemEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| transaction | category | category_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| transaction | sub_category | sub_category_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| transaction_tag | transaction | transaction_id | CASCADE | 09 TRANSACTION_TAGS (TransactionTagsEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| event_transactions | events | event_id | NO ACTION | 10 EVENT_LINKS (EventLinksEraser) | 18 EVENTS (EventEraser) | yes |
+| event_transactions | transaction | transaction_id | NO ACTION | 10 EVENT_LINKS (EventLinksEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| transaction_association | transaction | source_transaction_id | NO ACTION | 11 TRANSACTION_ASSOCIATIONS (TransactionAssociationEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| transaction_association | transaction | related_transaction_id | NO ACTION | 11 TRANSACTION_ASSOCIATIONS (TransactionAssociationEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| account | institution | institution_id | NO ACTION | 35 ACCOUNTS (AccountEraser) | 36 INSTITUTIONS (InstitutionEraser) | yes |
+| loan_balance_snapshot | loan | loan_id | CASCADE | 13 LOANS (LoanEraser) | 13 LOANS (LoanEraser) | yes |
+| loan_interest_period | loan | loan_id | CASCADE | 13 LOANS (LoanEraser) | 13 LOANS (LoanEraser) | yes |
+| loan_min_payment_period | loan | loan_id | CASCADE | 13 LOANS (LoanEraser) | 13 LOANS (LoanEraser) | yes |
+| csv_import_profile | account | default_account_id | NO ACTION | 26 CSV_IMPORTS (CsvImportEraser) | 35 ACCOUNTS (AccountEraser) | yes |
+| budget_envelope_category | budget_envelope | envelope_id | NO ACTION | 28 BUDGET_CATEGORY_LINKS (BudgetCategoryLinkEraser) | 30 BUDGET_ENVELOPES (BudgetEnvelopeEraser) | yes |
+| budget_envelope_category | category | category_id | NO ACTION | 28 BUDGET_CATEGORY_LINKS (BudgetCategoryLinkEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| budget_envelope_category | sub_category | sub_category_id | NO ACTION | 28 BUDGET_CATEGORY_LINKS (BudgetCategoryLinkEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| account | users | owner_id | NO ACTION | 35 ACCOUNTS (AccountEraser) | 99 users row | yes |
+| account_balance_snapshot | users | owner_id | NO ACTION | 35 ACCOUNTS (AccountEraser) | 99 users row | yes |
+| budget_envelope | users | owner_id | NO ACTION | 30 BUDGET_ENVELOPES (BudgetEnvelopeEraser) | 99 users row | yes |
+| budget_envelope_category | users | owner_id | NO ACTION | 28 BUDGET_CATEGORY_LINKS (BudgetCategoryLinkEraser) | 99 users row | yes |
+| category | users | owner_id | NO ACTION | 29 CATEGORIES (CategoryEraser) | 99 users row | yes |
+| category_item | users | owner_id | NO ACTION | 27 CATEGORY_ITEMS (CategoryItemEraser) | 99 users row | yes |
+| csv_import_profile | users | owner_id | NO ACTION | 26 CSV_IMPORTS (CsvImportEraser) | 99 users row | yes |
+| events | users | owner_id | NO ACTION | 18 EVENTS (EventEraser) | 99 users row | yes |
+| institution | users | owner_id | NO ACTION | 36 INSTITUTIONS (InstitutionEraser) | 99 users row | yes |
+| loan | users | owner_id | NO ACTION | 13 LOANS (LoanEraser) | 99 users row | yes |
+| loan_balance_snapshot | users | owner_id | NO ACTION | 13 LOANS (LoanEraser) | 99 users row | yes |
+| loan_interest_period | users | owner_id | NO ACTION | 13 LOANS (LoanEraser) | 99 users row | yes |
+| loan_min_payment_period | users | owner_id | NO ACTION | 13 LOANS (LoanEraser) | 99 users row | yes |
+| sub_category | users | owner_id | NO ACTION | 29 CATEGORIES (CategoryEraser) | 99 users row | yes |
+| transaction_association | users | owner_id | NO ACTION | 11 TRANSACTION_ASSOCIATIONS (TransactionAssociationEraser) | 99 users row | yes |
+| transaction | users | owner_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 99 users row | yes |
+| ledger_node | users | owner_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 99 users row | yes |
+| journal_entry | users | owner_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 99 users row | yes |
+| posting | journal_entry | journal_entry_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 12 RETIRED_LEDGER (RetiredLedgerEraser) | yes |
+| posting | ledger_node | ledger_node_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 12 RETIRED_LEDGER (RetiredLedgerEraser) | yes |
+| ledger_node_mapping | users | owner_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 99 users row | yes |
+| ledger_node_mapping | ledger_node | ledger_node_id | NO ACTION | 12 RETIRED_LEDGER (RetiredLedgerEraser) | 12 RETIRED_LEDGER (RetiredLedgerEraser) | yes |
+| api_token | users | owner_id | NO ACTION | 40 API_TOKENS (ApiTokenEraser) | 99 users row | yes |
+| transaction | import_history | import_history_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 25 IMPORT_HISTORY (ImportHistoryEraser) | yes |
+| transaction | account | account_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 35 ACCOUNTS (AccountEraser) | yes |
+| auth_token | users | user_id | NO ACTION | 38 SIGN_IN (SignInEraser) | 99 users row | yes |
+| user_oauth_account | users | user_id | NO ACTION | 38 SIGN_IN (SignInEraser) | 99 users row | yes |
+| user_akahu_connection | users | user_id | NO ACTION | 37 BANK_FEED_CONNECTIONS (AkahuConnectionEraser) | 99 users row | yes |
+| household | users | owner_id | NO ACTION | 15 HOUSEHOLDS (HouseholdEraser) | 99 users row | yes |
+| household_membership | household | household_id | NO ACTION | 15 HOUSEHOLDS (HouseholdEraser) | 15 HOUSEHOLDS (HouseholdEraser) | yes |
+| household_membership | users | household_owner_id | NO ACTION | 15 HOUSEHOLDS (HouseholdEraser) | 99 users row | yes |
+| household_membership | users | user_id | NO ACTION | 15 HOUSEHOLDS (HouseholdEraser) | 99 users row | yes |
+| household_resource_share | household | household_id | NO ACTION | 15 HOUSEHOLDS (HouseholdEraser) | 15 HOUSEHOLDS (HouseholdEraser) | yes |
+| transaction_attachment | transaction | transaction_id | CASCADE | 23 TRANSACTIONS (TransactionEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| merchant | sub_category | default_sub_category_id | NO ACTION | 24 MERCHANTS (MerchantEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| merchant_pattern | merchant | merchant_id | CASCADE | 24 MERCHANTS (MerchantEraser) | 24 MERCHANTS (MerchantEraser) | yes |
+| transaction | merchant | merchant_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 24 MERCHANTS (MerchantEraser) | yes |
+| dashboard_widget | dashboard | dashboard_id | CASCADE | 05 DASHBOARDS (DashboardEraser) | 05 DASHBOARDS (DashboardEraser) | yes |
+| recurring_series | merchant | merchant_id | CASCADE | 08 RECURRING_SERIES (RecurringSeriesEraser) | 24 MERCHANTS (MerchantEraser) | yes |
+| recurring_series | sub_category | sub_category_id | CASCADE | 08 RECURRING_SERIES (RecurringSeriesEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| transaction | recurring_series | recurring_series_id | SET NULL | 23 TRANSACTIONS (TransactionEraser) | 08 RECURRING_SERIES (RecurringSeriesEraser) | yes |
+| feedback_message | feedback_submission | submission_id | CASCADE | kept | kept | yes |
+| feedback_message_image | feedback_message | message_id | CASCADE | kept | kept | yes |
+| holding | account | account_id | NO ACTION | 34 HOLDINGS (HoldingEraser) | 35 ACCOUNTS (AccountEraser) | yes |
+| dashboard_widget | dashboard_component | component_id | NO ACTION | 05 DASHBOARDS (DashboardEraser) | 05 DASHBOARDS (DashboardEraser) | yes |
+| oauth_authorization_code | oauth_grant | grant_id | CASCADE | 41 OAUTH_GRANTS (OAuthGrantEraser) | 41 OAUTH_GRANTS (OAuthGrantEraser) | yes |
+| oauth_access_token | oauth_grant | grant_id | CASCADE | 41 OAUTH_GRANTS (OAuthGrantEraser) | 41 OAUTH_GRANTS (OAuthGrantEraser) | yes |
+| oauth_refresh_token | oauth_grant | grant_id | CASCADE | 41 OAUTH_GRANTS (OAuthGrantEraser) | 41 OAUTH_GRANTS (OAuthGrantEraser) | yes |
+| loan | account | paying_account_id | SET NULL | 13 LOANS (LoanEraser) | 35 ACCOUNTS (AccountEraser) | yes |
+| loan | account | account_id | CASCADE | 13 LOANS (LoanEraser) | 35 ACCOUNTS (AccountEraser) | yes |
+| goal_contribution | goal | goal_id | CASCADE | 31 GOALS (GoalEraser) | 31 GOALS (GoalEraser) | yes |
+| two_factor_recovery_code | users | user_id | CASCADE | 38 SIGN_IN (SignInEraser) | 99 users row | yes |
+| recurring_series | loan | loan_id | SET NULL | 08 RECURRING_SERIES (RecurringSeriesEraser) | 13 LOANS (LoanEraser) | yes |
+| recurring_series_previous_identity | recurring_series | recurring_series_id | CASCADE | 08 RECURRING_SERIES (RecurringSeriesEraser) | 08 RECURRING_SERIES (RecurringSeriesEraser) | yes |
+| loan | loan_group | group_id | SET NULL | 13 LOANS (LoanEraser) | 13 LOANS (LoanEraser) | yes |
+| receipt | transaction | transaction_id | SET NULL | 22 RECEIPTS (ReceiptEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| receipt_line | receipt | receipt_id | CASCADE | 22 RECEIPTS (ReceiptEraser) | 22 RECEIPTS (ReceiptEraser) | yes |
+| receipt_line | category | category_id | SET NULL | 22 RECEIPTS (ReceiptEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| receipt_line | sub_category | sub_category_id | SET NULL | 22 RECEIPTS (ReceiptEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| receipt_item_rule | sub_category | sub_category_id | CASCADE | 22 RECEIPTS (ReceiptEraser) | 29 CATEGORIES (CategoryEraser) | yes |
+| receipt | transaction_attachment | source_attachment_id | SET NULL | 22 RECEIPTS (ReceiptEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| receipt_ignored_attachment | transaction_attachment | attachment_id | CASCADE | 22 RECEIPTS (ReceiptEraser) | 23 TRANSACTIONS (TransactionEraser) | yes |
+| receipt_photo | receipt | receipt_id | CASCADE | 22 RECEIPTS (ReceiptEraser) | 22 RECEIPTS (ReceiptEraser) | yes |
+| receipt_reader_call | receipt | receipt_id | SET NULL | 20 RECEIPT_READER_CALLS (ReceiptReaderCallEraser) | 22 RECEIPTS (ReceiptEraser) | yes |
+| coach_message | coach_conversation | conversation_id | CASCADE | 21 COACH (CoachEraser) | 21 COACH (CoachEraser) | yes |
+| coach_prompt | coach_conversation | conversation_id | SET NULL | 21 COACH (CoachEraser) | 21 COACH (CoachEraser) | yes |
+| asset_valuation | manual_asset | asset_id | CASCADE | 17 ASSETS (AssetEraser) | 17 ASSETS (AssetEraser) | yes |
+| loan_group | manual_asset | asset_id | SET NULL | 13 LOANS (LoanEraser) | 17 ASSETS (AssetEraser) | yes |
+| chef_message | chef_recipe | recipe_id | CASCADE | 03 GROCERY (GroceryEraser) | 03 GROCERY (GroceryEraser) | yes |
+| dashboard_widget | users | owner_id | NO ACTION | 05 DASHBOARDS (DashboardEraser) | 99 users row | yes |
+| dashboard | users | owner_id | NO ACTION | 05 DASHBOARDS (DashboardEraser) | 99 users row | yes |
+| dashboard_component | users | owner_id | NO ACTION | 05 DASHBOARDS (DashboardEraser) | 99 users row | yes |
+| chef_message | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| chef_recipe | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| coach_message | users | owner_id | NO ACTION | 21 COACH (CoachEraser) | 99 users row | yes |
+| coach_prompt | users | owner_id | NO ACTION | 21 COACH (CoachEraser) | 99 users row | yes |
+| coach_conversation | users | owner_id | NO ACTION | 21 COACH (CoachEraser) | 99 users row | yes |
+| goal_contribution | users | owner_id | NO ACTION | 31 GOALS (GoalEraser) | 99 users row | yes |
+| goal | users | owner_id | NO ACTION | 31 GOALS (GoalEraser) | 99 users row | yes |
+| merchant_pattern | users | owner_id | NO ACTION | 24 MERCHANTS (MerchantEraser) | 99 users row | yes |
+| receipt_line | users | owner_id | NO ACTION | 22 RECEIPTS (ReceiptEraser) | 99 users row | yes |
+| receipt_ignored_attachment | users | owner_id | NO ACTION | 22 RECEIPTS (ReceiptEraser) | 99 users row | yes |
+| receipt_item_rule | users | owner_id | NO ACTION | 22 RECEIPTS (ReceiptEraser) | 99 users row | yes |
+| receipt_product_category | users | owner_id | NO ACTION | 04 RECEIPT_PRODUCT_RULES (ReceiptProductRulesEraser) | 99 users row | yes |
+| receipt_product_link | users | owner_id | NO ACTION | 04 RECEIPT_PRODUCT_RULES (ReceiptProductRulesEraser) | 99 users row | yes |
+| receipt_reader_call | users | owner_id | NO ACTION | 20 RECEIPT_READER_CALLS (ReceiptReaderCallEraser) | 99 users row | yes |
+| transaction_attachment | users | owner_id | NO ACTION | 23 TRANSACTIONS (TransactionEraser) | 99 users row | yes |
+| receipt | users | owner_id | NO ACTION | 22 RECEIPTS (ReceiptEraser) | 99 users row | yes |
+| holding_transaction | users | owner_id | NO ACTION | 34 HOLDINGS (HoldingEraser) | 99 users row | yes |
+| holding_value_snapshot | users | owner_id | NO ACTION | 34 HOLDINGS (HoldingEraser) | 99 users row | yes |
+| holding | users | owner_id | NO ACTION | 34 HOLDINGS (HoldingEraser) | 99 users row | yes |
+| asset_valuation | users | owner_id | NO ACTION | 17 ASSETS (AssetEraser) | 99 users row | yes |
+| manual_asset | users | owner_id | NO ACTION | 17 ASSETS (AssetEraser) | 99 users row | yes |
+| balance_assertion | users | owner_id | NO ACTION | 07 BALANCE_ASSERTIONS (BalanceAssertionEraser) | 99 users row | yes |
+| recurring_series | users | owner_id | NO ACTION | 08 RECURRING_SERIES (RecurringSeriesEraser) | 99 users row | yes |
+| loan_plan_scenario | users | owner_id | NO ACTION | 32 LOAN_PLANS (LoanPlanEraser) | 99 users row | yes |
+| loan_group | users | owner_id | NO ACTION | 13 LOANS (LoanEraser) | 99 users row | yes |
+| akahu_account | users | owner_id | NO ACTION | 33 BANK_FEED_ACCOUNTS (AkahuAccountEraser) | 99 users row | yes |
+| csv_import_file_snapshot | users | owner_id | NO ACTION | 26 CSV_IMPORTS (CsvImportEraser) | 99 users row | yes |
+| import_history | users | owner_id | NO ACTION | 25 IMPORT_HISTORY (ImportHistoryEraser) | 99 users row | yes |
+| forecast_item_label | users | owner_id | NO ACTION | 39 FORECAST_LABELS (ForecastLabelEraser) | 99 users row | yes |
+| notification | users | owner_id | NO ACTION | 14 NOTIFICATIONS (NotificationEraser) | 99 users row | yes |
+| notification_preference | users | owner_id | NO ACTION | 14 NOTIFICATIONS (NotificationEraser) | 99 users row | yes |
+| oauth_grant | users | owner_id | NO ACTION | 41 OAUTH_GRANTS (OAuthGrantEraser) | 99 users row | yes |
+| subscription | users | owner_id | NO ACTION | 16 SUBSCRIPTION (SubscriptionEraser) | 99 users row | yes |
+| stripe_customer | users | owner_id | NO ACTION | 01 STRIPE_CUSTOMER_ROW (StripeCustomerRowEraser) | 99 users row | yes |
+| beta_access | users | owner_id | NO ACTION | 00 BETA_ACCESS (BetaAccessEraser) | 99 users row | yes |
+| ai_credit_use | users | owner_id | NO ACTION | 02 AI_CREDITS (AiCreditUseEraser) | 99 users row | yes |
+| grocery_ai_call | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| grocery_aisle_choice | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| grocery_item | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| grocery_suggestion_skip | users | owner_id | NO ACTION | 03 GROCERY (GroceryEraser) | 99 users row | yes |
+| saved_query | users | owner_id | NO ACTION | 06 SAVED_QUERIES (SavedQueryEraser) | 99 users row | yes |
+| merchant | users | owner_id | NO ACTION | 24 MERCHANTS (MerchantEraser) | 99 users row | yes |
+
+</details>
+
+*Write-path analysis.*
+
+| Path | Can it start before deletion and write after? | What stops it now | Test |
+|---|---|---|---|
+| Browser session (REST) | The request may be mid-flight when deletion starts | Its insert takes a key-share lock through the new FK: waits, then fails; or commits first and is erased. A new request after deletion gets 401 (session token erased) | `aWriteThatStartedBeforeDeletion_...`, `aWriteThatStartsWhileDeletionRuns_...`, `DeletedAccountAccessTest` |
+| API token and MCP (OAuth access token) | Same | Same FK fence; after deletion the access token is refused, the refresh token returns `invalid_grant`, an unredeemed authorization code returns `invalid_grant` | `OAuthFlowIntegrationTest.accountDeletion_invalidatesAccessTokenRefreshTokenAndUnredeemedCode` |
+| Akahu scheduled sync (captured user id) | Yes: it reads users, then fetches from the provider, then writes | FK fence on `import_history`, `transaction`, `akahu_account`; the stale id cannot insert after commit | Fence tests use an `import_history` insert as the sync's write |
+| Recurring-series job (captured user id) | Yes | FK fence on `recurring_series` (V174) | Fence tests use a `recurring_series` insert |
+| Holding price refresh and other jobs | They update existing rows | An update of a row deletion already removed affects 0 rows; an insert is fenced | Covered by the FK mechanism, no dedicated test |
+| Feedback submission | Yes | **Not fenced**: feedback tables are kept on purpose (U14) and have no FK, so a request in flight could still add feedback for a deleted id | Open, see X-40 |
+| Two deletions at once | | User-row `FOR UPDATE` | `twoDeletionsOfTheSameAccountAtOnce_...` |
+| Two application instances | | Same database locks; the tests already use separate connections | No two-process test (the test infrastructure starts one context) |
+
+*Known limitation.* A writer that locks some personal row first (for example an account) and then inserts a child can deadlock with a deletion that holds the users row and then deletes that account. PostgreSQL detects it and aborts one side: either the write fails or the deletion fails and can be retried. No data survives a successful deletion in either case. Not tested deterministically.
+
+*Not done, and why.*
+
+| Item | Status | Decision needed |
+|---|---|---|
+| Feedback rows and images | Kept, explicitly listed | U14 |
+| `deleted_account` list | Not done | U30 |
+| Admin audit rows keep the deleted person's email | Not changed | U45 (new) |
+| Independent verification of this work | Not done | Second reviewer |
+
 ### Phase 0b: Billing safety on deletion
 
 - **Objective and scope:** P1 to P4 for the user path; webhook guard; Stripe status fields.
@@ -1749,7 +2082,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
-| 0a Deletion integrity | **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
+| 0a Deletion integrity | **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
 | 0b Billing safety | **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 (REV-9 lifecycle/keyring); U21/U38; U17 and AS-8; U42/U44; AS-16; U19; U3; U41; V2-8 to V2-10 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
@@ -2363,6 +2696,10 @@ DONE and ABANDONED are terminal; every other state reaches one of them by `destr
 | X-35 | REV-2 revision 4 V2-3/U44 | Card-only/3DS does not exclude trial, 100% discount or future-anchor subscriptions; payment_status alone is not subscription terminality | V2-9: every completed subscription Session must be reconciled to its subscription |
 | X-36 | REV-2 revision 4 V2-1/V2-4 | Pre-mark open/uncollectible invoices survive cancellation; only invoices created after mark were voided | V2-10: neutralize all customer invoice states and linked PaymentIntents |
 | X-37 | 28.4.3 U17 rows | The earlier U17 row says either deleting or retaining a customer meets the billing guarantee; the re-opened safety row says only deletion meets documented P1 | U17 revision 4 is authoritative; first row marked superseded, prior guarantee withdrawn |
+| X-38 | 4.3 D3 against the schema | The ADR's D3 list missed eight tables (AI credits, grocery, recipes, receipt product rules); the schema-driven seeding found them | Phase 0a status |
+| X-39 | Section 19 against the code | "Lock the user row" with JPA `PESSIMISTIC_WRITE` gives `FOR NO KEY UPDATE`, which does not block foreign-key inserts; 46 owner tables had no FK to `users` at all | Native `FOR UPDATE` and V174 |
+| X-40 | 19.3 against U14 | Feedback is kept and unfenced, so an in-flight request can still add feedback for a deleted id | Open until U14 |
+| X-41 | 19.1 against `admin_audit_entry` | Admin audit rows keep the deleted person's email as `target_email` | Open, U45 |
 
 #### 28.4.3 Decisions requiring Lionel's approval
 
@@ -2383,6 +2720,7 @@ None of these was decided here. Each has a recommendation.
 | U42 (revision 5; supersedes revision 4) | Accept residual billing risk after the deletion protocol (including an operator-created charge or undocumented Stripe behaviour)? | No residual risk by default; Phase 0b stays blocked until V2-8 to V2-10 and AS-16 are verified. U17(a) is the required documented remote fence, not a substitute for neutralizing pre-existing objects | Explicitly accept a bounded one-off charge/refund risk only after test-mode evidence proves no recurring subscription can survive; otherwise do not ship | P1 is not approved as a risk acceptance; owner approval required for any residual financial risk | Phase 0b |
 | U17 (re-opened as a safety decision by revision 4) | Delete the Stripe customer after cancellation, or keep it? | (a) Delete, subject to AS-8 (record keeping). It is the only option under which P1 holds on documented guarantees | (b) Keep the customer without payment methods: keeps invoice history attached, but its safety rests on undocumented behaviour | Legal (AS-8) against billing safety; owner approval required | Phase 0b |
 | U44 (revision 5) | Restrict subscription Checkout to card only? | Yes, as a defense-in-depth product setting, not a P1 proof | Keep Dashboard-managed methods; the deletion protocol must neutralize delayed methods. Card-only does not eliminate trials, 100%-discount or future-anchor sessions (V2-9) | Product trade-off: excludes bank-debit customers; not sufficient to claim synchronous payment or no future charge | Phase 0b |
+| U45 (new, Phase 0a) | Keep, anonymize or delete admin audit rows that name a deleted person (`target_email`)? | Anonymize: keep the action for accountability, clear the email | Keep (accountability, but personal data survives); delete (loses who deleted whom) | Privacy against admin accountability; owner approval required | Phase 0a follow-up |
 
 #### 28.4.4 Final readiness assessment
 
@@ -2398,6 +2736,8 @@ What blocks everything else, exactly:
 3. **Phases 3 to 5** additionally need the REV-3 matrix and the REV-4 integrity contract reflected in their migrations and tests. Both are specified here.
 4. **Phases 6b and 6c** additionally need U39 resolved (recommendation (b), revision 3), the REV-1 revision 3 default, the revision 4 corrections V1-1 to V1-5 (file covered ranges, `MATCH_INVALIDATED`, AS-17), the `match_basis` column, REV-6 step 3a and the REV-7 rules.
 5. **Phase 7a** needs U9.
+
+**Phase 0a implementation (2026-11-15).** Implemented on two unmerged fern-funds branches, tests executed, not independently verified, not deployed; U14, U30 and U45 open. Phases 0b, 6b and 6c remain **NOT READY**; nothing of them was implemented.
 
 **Revision 5 verification (2026-11-15).** Phase 0a: ready to implement (definition of done unchanged). Phase 0b: **not ready**; REV-2 revision 5 adds V2-8 to V2-10, so no known protocol defect is claimed closed until those criteria and Stripe test-mode cases pass; blocked by U17 (safety), U42, U44, AS-16, U21, U38, U19, U41 and TD-4. Phase 6b: not ready; add V1-6/V1-7 (file/live coverage) to TD-6, V1-3/V1-8 invalidation lifecycle and V1-2/AS-17; no matching implementation readiness. Phase 6c: not ready; inherits 6b and existing U5/U7/U8/U34/CU5, AS-1/2, REV-6 step 3a and REV-7. This pass does not approve U39(a) or any residual billing risk.
 
