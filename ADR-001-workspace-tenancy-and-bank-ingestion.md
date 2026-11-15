@@ -1471,7 +1471,7 @@ Not decided at ADR level because they do not change architecture, correctness, s
 | AS-12 | The exchange-rate provider covers every currency in use | Compare account currencies with provider coverage | To verify | U24 |
 | AS-13 (E3) | Remaining deletion leftovers (D3b, D3c) | Tests in Phase 0a | Partially verified | 19 |
 | AS-14 (E4) | Concurrency and overlap behaviour of today's importer (S1 to S6 of the E3 and E4 review) | Characterization tests T1 to T5 and T12 in Phase 0 | Pending | 11 |
-| AS-15 | The legacy `household*` tables are empty in production | Row counts | To verify | TD-1, Phase 8 |
+| AS-15 | The legacy `household*` tables are empty in production | Row counts | **False (read-only check 2026-11-15):** 1 `household` (created 2026-08-17), 1 `household_membership` (status REVOKED), 0 `household_resource_share`. The household owner holds an active PRO plan, so raising the `household` minimum to PRO (H7) removes access from nobody. Phase 8 legacy removal needs a decision on this row (U47) | TD-1, Phase 0c, Phase 8 |
 | AS-16 | Stripe: deleting a customer cancels subscriptions in every non-terminal status, and a Checkout Session that is mid-payment cannot complete against a deleted customer (REV-2 revision 2 cancels explicitly, so only its residual risk depends on this) | Stripe test mode, before Phase 0b ships | To verify | 13.3, 19, Phase 0b |
 | AS-17 | Akahu exposes a continuation field (`_migrated`) on **transactions**, not only on accounts | Akahu documentation and a recorded payload | To verify | 11.4, 10.6, Phase 6b |
 
@@ -2763,6 +2763,7 @@ None of these was decided here. Each has a recommendation.
 | U17 (re-opened as a safety decision by revision 4) | Delete the Stripe customer after cancellation, or keep it? | (a) Delete, subject to AS-8 (record keeping). It is the only option under which P1 holds on documented guarantees | (b) Keep the customer without payment methods: keeps invoice history attached, but its safety rests on undocumented behaviour | Legal (AS-8) against billing safety; owner approval required | Phase 0b |
 | U44 (revision 5) | Restrict subscription Checkout to card only? | Yes, as a defense-in-depth product setting, not a P1 proof | Keep Dashboard-managed methods; the deletion protocol must neutralize delayed methods. Card-only does not eliminate trials, 100%-discount or future-anchor sessions (V2-9) | Product trade-off: excludes bank-debit customers; not sufficient to claim synchronous payment or no future charge | Phase 0b |
 | U45 (new, Phase 0a) | Keep, anonymize or delete admin audit rows that name a deleted person (`target_email`)? | Anonymize: keep the action for accountability, clear the email | Keep (accountability, but personal data survives); delete (loses who deleted whom) | Privacy against admin accountability; owner approval required | Phase 0a follow-up |
+| U47 (new) | The one legacy Household in production (owner on PRO, its only membership REVOKED): keep it until Phase 8 migrates or removes legacy households, or delete it now? | Keep until Phase 8; nothing reads it for anyone else | Delete now (simpler Phase 8, but a production data deletion) | Owner approval required for any deletion | Phase 8 |
 
 #### 28.4.4 Final readiness assessment
 
