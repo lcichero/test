@@ -569,6 +569,8 @@ Confirmation of the re-issue handling (review item, no automatic merge) is `PEND
 
 ### 11.5 Concurrency, transaction boundaries and recovery
 
+> **(REV-1 revision 3):** Matching, user-confirmed review resolution and undo of any DAY_COMPLETE link (if U39(a) is ever approved) take the internal account write lock. A sync cannot use a stale mapping or a heuristic match to mutate a different canonical transaction; match_basis is persisted and checked on every update/removal.
+
 ```mermaid
 sequenceDiagram
     participant J as Sync run (connection A)
@@ -826,7 +828,9 @@ Still `PENDING` (section 24.3): the Stripe customer after deletion (U17), admin 
 | Internal service calls | Pass `WorkspaceScope` explicitly through module APIs | Modules never call `CurrentUser.require()` to decide tenancy |
 | Collaboration context | A request on a resource granted to the caller targets the grantor's PERSONAL workspace and is authorized by an active `resource_collaboration` grant instead of a membership (9.5) | Limited to the granted resource ids and the grant's permission; READ_ONLY refuses writes; never usable for consolidated reads |
 
-`CurrentWorkspace` (in Identity and Access) resolves `(userId, workspaceId, role, mode)` once per request in a filter after authentication, and publishes it to the security context. `mode` is `MEMBER`, `CONSOLIDATED_READ` or `COLLABORATION` (with the granted ids). It replaces `security/SecurityContextActiveContext.java` and the `ActiveContext` interface.
+**Deletion/billing guard (REV-2 revisions 2–3).** While `users.deletion_requested_at` is set, refuse checkout creation, subscription creation/update, plan grants and any webhook that could create/extend an entitlement; webhook events are serialized/recorded against `deletion_attempt_id`. The Stripe neutralization/verification protocol is in 13.3/28.4.1; API-layer refusal alone does not neutralize already-created Stripe objects.
+
+`CurrentWorkspace` (in Identity and Access) resolves `(userId, workspaceId, role, mode) once per request in a filter after authentication, and publishes it to the security context. `mode` is `MEMBER`, `CONSOLIDATED_READ` or `COLLABORATION` (with the granted ids). It replaces `security/SecurityContextActiveContext.java` and the `ActiveContext` interface.
 
 **Token authority (REV-3).** A token acts only in its own `workspace_id`. `consolidated_read` is an explicit read-only exception limited to `@ConsolidatedRead` endpoints over the caller's ACTIVE memberships evaluated per request; tokens never use the collaboration context; a token is refused entirely once its owner is no longer an ACTIVE member of its workspace. The full matrix is in 28.4.
 
@@ -1754,7 +1758,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | 5 Workspace scoping | Not ready | Phase 4; U5, U24, U27, U28, U31, U35 |
 | 6a Ingestion model and locks | Not ready | Phase 5; TD-5, TD-7; AS-6, AS-7 |
 | 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 3 (DAY_COMPLETE disabled by default), `match_basis` and collision/date/FX tests |
-| 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2; REV-6 step 3a and REV-7 rules |
+| 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2; REV-1 revision 3 matching/`match_basis` and U39 (inherited from 6b); REV-6 step 3a and REV-7 rules |
 | 7a Households | Not ready | Phases 5, 6c; U9 (REV-6); U3, U6, U10, U16, U22, U23, U25, U26, U29; TD-9 |
 | 7b COLLABORATOR | Not ready | Phase 7a; CU1 to CU4 (CU6 if VIEWER ships) |
 | 8 Legacy removal | Not ready | Phase 7b plus one stable release |
@@ -2184,6 +2188,16 @@ stateDiagram-v2
 
 *Success predicate:* before step 6, exhaust all pages and verify zero non-terminal subscriptions; zero non-terminal schedules; zero OPEN invoices and chargeable/in-flight invoice PaymentIntents; zero OPEN Checkout Sessions; no COMPLETE/unpaid async session capable of succeeding into a subscription/charge after erasure; zero pending invoice items; no draft invoice able to auto-finalize/collect; and U17 customer/payment-method condition. Unknown, unsupported, unpaginated or transient results fail closed. Durable reconciliation handles delayed events. Test each status, not only the happy path.
 
+
+*Official Stripe references checked (API reference; endpoint behavior is not inferred from SDK prose):*
+- Customer deletion: https://docs.stripe.com/api/customers/delete
+- Subscription cancellation: https://docs.stripe.com/api/subscriptions/cancel
+- Subscription schedules and cancellation: https://docs.stripe.com/api/subscription_schedules and https://docs.stripe.com/api/subscription_schedules/cancel
+- Invoice object/auto-advance and void: https://docs.stripe.com/api/invoices/object and https://docs.stripe.com/api/invoices/void
+- Pending invoice items: https://docs.stripe.com/api/invoiceitems and https://docs.stripe.com/api/invoiceitems/delete
+- Checkout Sessions list/expire: https://docs.stripe.com/api/checkout/sessions and https://docs.stripe.com/api/checkout/sessions/expire
+- Delayed Checkout payments/webhook fulfillment: https://docs.stripe.com/payments/checkout/fulfillment#delayed-payment-methods
+
 **P1 status: NOT YET DEMONSTRATED.** Step 4's "no open invoice with automatic collection" is insufficient. U42 is incorrectly scoped: it omits COMPLETE/unpaid asynchronous Checkout and scheduled subscriptions. This remains a Phase 0b blocker, not permission to relax P1.
 
 ###### REV-9 revision 3: expiry is a transition for every non-terminal task
@@ -2237,6 +2251,7 @@ None of these was decided here. Each has a recommendation.
 | U39 (new) | On days with several identical amounts, accept more review items in exchange for never pairing them silently? | Yes, with the grouped one-click "they are the same" resolution | Pair automatically by order of appearance (the earlier text): fewer items, but silent crossed links that later misapply provider corrections | Financial correctness against review fatigue | Phase 6b |
 | U40 (new) | May an MCP grant or REST token ever act on a COLLABORATOR grant? | No for the first release | Yes, with a separate consent line: more agent reach, larger token blast radius | Security: tokens stay "one workspace plus read-only aggregates" | Phase 7b |
 | U42 (new, revision 2) | Accept the residual risk that, until AS-16 is verified, a Checkout Session already mid-payment might complete against a deleted customer and cause one charge (refunded through the admin alert), with no renewal possible? | Yes, and verify AS-16 in Stripe test mode before Phase 0b ships; if AS-16 shows the session cannot complete, the risk disappears | Refuse to ship 0b until AS-16 is verified | P1 is satisfied for renewals in every case; this is only about a one-off charge created by the user during the attempt | Phase 0b |
+| U42 (revision 3; supersedes prior row) | Accept the remaining risk from completed/unpaid asynchronous Checkout, schedules or delayed Stripe events after deletion? | No residual charge/renewal accepted by default; Phase 0b blocked until Stripe behavior and durable neutralization/reconciliation are verified | Explicitly accept a bounded one-off charge/refund risk only after test-mode evidence proves no recurring subscription can survive; otherwise do not ship | P1 is not currently demonstrated; owner approval required for any residual financial risk | Phase 0b |
 | U39 (revised by revision 2) | Same question, now with tiers: (a) tier 2 automatic failover matching with `DAY_COMPLETE` links, plus bulk confirmation for files; (b) no automatic heuristic links at all, failover overlaps are review items too | (a) | (b) is strictly safer and costs one review item group per failover; (a) keeps failover silent in the common case | Financial correctness against review load | Phase 6b |
 | U41 (new) | While a deletion is in progress (up to 15 minutes), checkout is refused. Acceptable copy: "Account deletion in progress"? | Yes | No visible message (generic error) | UX only | Phase 0b |
 | U43 (new) | May DAY_COMPLETE heuristic auto-linking be enabled despite the generalized collision counterexample? | No automatic heuristic links (U39(b)); tier 2 disabled by default | Enable only with explicit owner acceptance (U39(a)); lower review load but knowingly risks crossed links and incorrect later updates/removals | Financial correctness; owner approval required to enable tier 2 | 6b/6c |
