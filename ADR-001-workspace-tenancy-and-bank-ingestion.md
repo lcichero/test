@@ -549,6 +549,8 @@ This changes current behaviour (A4): today a pending row becomes the settled row
 
 ### 11.4 Lifecycle cases
 
+> **(REV-1 revision 3):** DAY_COMPLETE auto-linking is disabled unless U39(a) is explicitly approved. Default: every failover overlap is an AMBIGUOUS review item; only tier-1 provider identity auto-links.
+
 Transaction status: `ACTIVE`, `USER_EXCLUDED` (11.7), `REMOVED_BY_PROVIDER`. Every list, total, budget and report reads `ACTIVE` rows only.
 
 | Case | Behaviour |
@@ -650,6 +652,8 @@ Deleting an imported transaction must never make it reappear (Q6). It becomes **
 A separate tombstone table is rejected: the link already identifies the source record, so a status on the canonical row plus the kept link is one mechanism instead of two, and it survives provider id changes through the adapter's continuation handling (10.6).
 
 ### 11.8 Reconciliation across sources
+
+> **(REV-1 revision 3):** Date/amount/description proposals never auto-link. DAY_COMPLETE is disabled unless U39(a) is explicitly approved; otherwise failover overlaps are review items.
 
 Several sources may map to one internal account (Q7): a live feed, a CSV of the same account, a later second provider.
 
@@ -776,6 +780,8 @@ Still `PENDING` (section 24.3): bank feeds of FREE members into a Household (U7)
 Workspace or household billing is not introduced (Q8). Reason to revisit: a household plan priced per household, or adviser workspaces.
 
 ### 13.3 Subscriptions and account deletion
+
+> **(REV-2 revision 3):** P1 is not yet verified. Deletion cannot pass step 4 until schedules, all invoice states/PaymentIntents and COMPLETE/unpaid asynchronous Checkout Sessions are neutralized and paginated (28.4.1). U42's prior residual-risk wording is superseded.
 
 Confirmed (P1 to P4, U15):
 
@@ -1068,6 +1074,8 @@ No module is extracted now; nothing in this ADR requires it. The rules above kee
 
 ## 17. Data model proposal
 
+> **(REV-9 revision 3):** This SQL is a sketch; implement 28.4.1 REV-9 revisions 2–3: separate outbox_secret/operator audit, all-state destroy_after sweeper and worker fencing. outbox_task needs state, lease/fencing token, payload version, terminal reason and timestamps; credentials never enter payload.
+
 ```sql
 CREATE TABLE workspace (
   id            BIGSERIAL PRIMARY KEY,
@@ -1171,6 +1179,8 @@ There is no recovery window and no tombstone (Q2). Operational backups and legal
 
 ### 19.2 Deletion flow
 
+> **(REV-2 revision 3):** The diagram's after-commit Stripe customer action is superseded. Billing neutralization and verification occur before local erasure; after commit only provider revocation and durable reconciliation for late/async Stripe events remain.
+
 ```mermaid
 flowchart TD
     A[User opens Delete account] --> B[Live check with Stripe:<br/>all subscriptions of the customer]
@@ -1201,7 +1211,7 @@ One database transaction:
 8. Clear `actor_label` on audit rows of surviving workspaces; `created_by` becomes null through `ON DELETE SET NULL`.
 9. Delete the user. Commit.
 
-After commit, the outbox worker performs external calls with retries and backoff; failures are visible in the admin console and never roll back the database. It never cancels a subscription in the normal path (P1); the only Stripe cancellation it performs is the defensive one in 13.3 for an event that would grant or renew access for a missing owner. Webhooks for a deleted owner are acknowledged and ignored and never create or extend an entitlement.
+After commit, the outbox worker performs provider revocation with retries and backoff; failures are visible in the admin console and never roll back the database. It does not perform normal Stripe customer/subscription cleanup (REV-2 revisions 2–3); only durable late-event reconciliation/refund/cancel safety may call Stripe. Webhooks for a deleted owner are acknowledged and ignored and never create or extend an entitlement.
 
 Erasure runs through the `UserDataEraser` and `WorkspaceDataEraser` SPIs in the order of 16.4 (D-30). The precondition (live Stripe check) runs through the `AccountDeletionPrecondition` SPI before the transaction and again inside the request. If U30 (a) is chosen, step 9 also records the user id in `deleted_account`.
 
@@ -1732,7 +1742,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2) and outbox contract (REV-9) are now specified; Stripe status fields and the webhook guard can start | TD-4 with the REV-9 revision 2 contract and keyring; U21, U38 (eligibility); U17 and AS-8 (privacy choice); AS-16 and U42 (REV-2 revision 2); U19 (admin route); U3 (OWNER warning text); U41 |
+| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2 revision 3) and outbox contract (REV-9 revision 3) are not proven complete; Stripe status fields and webhook guard can start, but billing erasure cannot ship | TD-4 with the REV-9 revision 2 contract and keyring; U21, U38 (eligibility); U17 and AS-8 (privacy choice); AS-16 and U42 (REV-2 revision 2); U19 (admin route); U3 (OWNER warning text); U41 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
@@ -1740,7 +1750,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | 4 Data foundation | Not ready | Phase 3; TD-8; AS-5 |
 | 5 Workspace scoping | Not ready | Phase 4; U5, U24, U27, U28, U31, U35 |
 | 6a Ingestion model and locks | Not ready | Phase 5; TD-5, TD-7; AS-6, AS-7 |
-| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 2 tiers and `match_basis` in the tests |
+| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 3 (DAY_COMPLETE disabled by default), `match_basis` and collision/date/FX tests |
 | 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2; REV-6 step 3a and REV-7 rules |
 | 7a Households | Not ready | Phases 5, 6c; U9 (REV-6); U3, U6, U10, U16, U22, U23, U25, U26, U29; TD-9 |
 | 7b COLLABORATOR | Not ready | Phase 7a; CU1 to CU4 (CU6 if VIEWER ships) |
@@ -2148,6 +2158,42 @@ stateDiagram-v2
 
 *Valid.* Phase 0b was labelled "partly ready" without the race of REV-2 and without an outbox contract (REV-9), and 6b and 6c did not list the matching contract (REV-1) or the mapping lifecycle (REV-6, REV-7). 28.2 is updated accordingly.
 
+
+###### REV-1 revision 3: DAY_COMPLETE is not an identity and residual risk is broader
+
+*Verification:* revision 2's day-complete test proves equality of daily key sets, not transaction identity. Criterion K generalizes: old source has X(amount A), Y(amount B); new source has X'(amount B), Y'(amount A). Each amount is unique on each side, so all conditions pass although both links are crossed. Same-day reversals, split settlements and FX can create collisions when signed settled-amount keys happen to be unique/equal; otherwise they safely fall back to review (false negatives). "Both sources report posted date" also does not prove timezone normalization; timestamp-only adapters must convert using the institution/account posting timezone, otherwise tier 3.
+
+*Correction (Technical; supersedes tier 2 of revision 2):* DAY_COMPLETE is **not an identity guarantee**. Disable automatic tier-2 links until Lionel explicitly accepts this risk through U39. Default: all failover overlap records become review items; only tier-1 provider identity auto-links. Description/date/amount may order proposed pairs only. Add explicit posted-date normalization: date-only posted field remains a date; timestamp is converted using the adapter's documented institution timezone; unknown semantics => tier 3. Reversals remain separate; split/aggregate and FX settlement differences remain review unless provider identity proves continuity.
+
+*Tests:* replace H/O: failover day-complete produces review by default; assert no DAY_COMPLETE automatic link unless U39(a) is approved/enabled. Add multi-key crossed-collision property cases, timezone boundary, reversal, split-vs-aggregate and FX/fee tests. K remains a minimal counterexample, not the only one.
+
+*Decision:* U39 recommendation becomes (b), no heuristic automatic links. Owner approval remains required to enable (a); no confirmed decision in 24.1 is reopened.
+
+###### REV-2 revision 3: enumerate every Stripe billing surface before erasure
+
+*Verification:* revision 2 closes ordinary renewal only conditionally; it does not prove its "no chargeable Stripe state" predicate.
+
+1. **Schedules omitted.** Steps 2–4 list subscriptions, not customer subscription schedules. A NOT_STARTED schedule can create a subscription in a future phase, especially under U17(b), where the customer remains. List/paginate and cancel every non-terminal schedule (NOT_STARTED and ACTIVE), retrieve after timeout, and verify no schedule can create/change a subscription. Failure/unknown state refuses deletion.
+2. **Invoices/PaymentIntents.** U17(b) says void "any open invoice" (singular); U17(a) has no invoice action. Customer deletion is not documented as voiding invoices or cancelling their PaymentIntents. List/paginate all invoices under either option; void every OPEN invoice, and delete DRAFT one-off invoices where possible or disable auto-advance and prove they cannot finalize/collect. Retrieve after mutation. An OPEN charge-automatically invoice is not safe merely because auto_advance=false: a PaymentIntent/manual pay can still collect. Do not erase while any OPEN invoice or chargeable/in-flight invoice PaymentIntent remains.
+3. **Async Checkout omitted.** Expiring status=OPEN sessions misses COMPLETE sessions with payment_status=unpaid (delayed payment methods) whose asynchronous payment can succeed later. List all customer sessions, not only OPEN; inspect COMPLETE/unpaid and associated PaymentIntent/subscription. Do not assert customer deletion prevents delayed one-off payment. For subscription-mode sessions reconcile resulting subscriptions/schedules before and after async-success events. If Stripe cannot synchronously neutralize an in-flight payment, refuse deletion or keep a durable tombstone/reconciliation that cancels/refunds and prevents renewal before claiming deletion complete.
+4. **Pending invoice items/balance.** Delete pending invoice items only after paginating all unassigned items; items already attached to invoices are covered by voiding. Customer balance is not a standalone charge rail but is applied to future invoices; under U17(b), neutralize it if any future invoice/schedule remains possible. Document its semantics and verify no future billing object can consume it.
+5. **Auto-advance.** OPEN+automatic-collection misses DRAFT invoices with auto_advance=true/automatically_finalizes_at. Disable auto-advance or delete/void them and verify. Include status, collection_method, auto_advance, scheduled finalization and PaymentIntent status in the predicate.
+
+*Success predicate:* before step 6, exhaust all pages and verify zero non-terminal subscriptions; zero non-terminal schedules; zero OPEN invoices and chargeable/in-flight invoice PaymentIntents; zero OPEN Checkout Sessions; no COMPLETE/unpaid async session capable of succeeding into a subscription/charge after erasure; zero pending invoice items; no draft invoice able to auto-finalize/collect; and U17 customer/payment-method condition. Unknown, unsupported, unpaginated or transient results fail closed. Durable reconciliation handles delayed events. Test each status, not only the happy path.
+
+**P1 status: NOT YET DEMONSTRATED.** Step 4's "no open invoice with automatic collection" is insufficient. U42 is incorrectly scoped: it omits COMPLETE/unpaid asynchronous Checkout and scheduled subscriptions. This remains a Phase 0b blocker, not permission to relax P1.
+
+###### REV-9 revision 3: expiry is a transition for every non-terminal task
+
+*Verification:* revision 2 sweeps only FAILED. A PENDING task (worker unavailable) or IN_PROGRESS task (stuck/lease lost) can retain ciphertext beyond destroy_after indefinitely.
+
+*Correction (Technical; supersedes expiry paragraph/J):* at destroy_after, every state other than DONE/ABANDONED atomically becomes ABANDONED with reason CREDENTIAL_EXPIRED; destroy its secret and fence/invalidate worker claims. Sweeper covers PENDING, IN_PROGRESS and FAILED. Worker checks state, lease/fencing token and credential expiry immediately before decrypt/use; stale workers cannot resurrect a task or commit DONE. Define maximum lease/operation duration; a worker cannot hold/use plaintext beyond expiry. Retry only while now < destroy_after and secret exists/decrypts; never extend deadline. Expired task cannot retry; create a new task only with a still-valid credential.
+
+*Key rotation:* re-encrypt every extant outbox_secret (including FAILED and PENDING) before old-key removal. Rotation and worker claim/decrypt use locking or compare-and-swap fencing. Old-key removal requires a database-wide zero-reference check across all encrypted columns (and a backup/key-retention policy), not only a batch counter. Missing key id is a hard failure, never silent task abandonment.
+
+*Acceptance criteria (add).* N: PENDING, IN_PROGRESS and FAILED all expire to ABANDONED, secret absent and worker fenced; no transition recreates it. O: retry before expiry preserves original deadline; at/after expiry is rejected. P: rotation re-encrypts FAILED and PENDING rows; removing old key cannot strand either. Q: stuck IN_PROGRESS worker cannot use secret after expiry or commit DONE after fencing.
+
+
 #### 28.4.2 Contradictions and missing guarantees found during this assessment
 
 | # | Where | Contradiction or missing guarantee | Fixed by |
@@ -2171,6 +2217,10 @@ stateDiagram-v2
 | X-17 | `StripeCheckoutService.ensureCustomer` | After remote cleanup and a failed local transaction, the stored customer id points to a deleted or closed customer | REV-2 revision 2 step 5 |
 | X-18 | Subscription cancel semantics | Pending invoice items survive a subscription cancellation and can be billed later | REV-2 revision 2 step 3 (delete them) |
 | X-19 | `AkahuCredentialCipher` | Single key, no key id, so no rotation without downtime | REV-9 revision 2 keyring |
+| X-20 | REV-1 revision 2, criterion K | DAY_COMPLETE compares daily key sets, not transaction identity; K generalizes to crossed swaps across multiple unique amounts | REV-1 revision 3; U39(b) default |
+| X-21 | REV-2 revision 2 steps 2–4 | Schedules and COMPLETE/unpaid asynchronous Checkout Sessions are omitted; delayed payment can succeed after local deletion | REV-2 revision 3; deletion blocked pending neutralization |
+| X-22 | REV-2 revision 2 steps 3–4 | OPEN invoices/PaymentIntents and DRAFT auto-advance are not neutralized/verified under U17(a); OPEN+automatic-collection alone is incomplete | REV-2 revision 3; void/disable and verify all invoice states |
+| X-23 | REV-9 revision 2 expiry job | Only FAILED tasks are swept; PENDING or IN_PROGRESS secret can outlive destroy_after | REV-9 revision 3; all non-terminal states expire with worker fencing |
 
 #### 28.4.3 Decisions requiring Lionel's approval
 
@@ -2186,6 +2236,7 @@ None of these was decided here. Each has a recommendation.
 | U42 (new, revision 2) | Accept the residual risk that, until AS-16 is verified, a Checkout Session already mid-payment might complete against a deleted customer and cause one charge (refunded through the admin alert), with no renewal possible? | Yes, and verify AS-16 in Stripe test mode before Phase 0b ships; if AS-16 shows the session cannot complete, the risk disappears | Refuse to ship 0b until AS-16 is verified | P1 is satisfied for renewals in every case; this is only about a one-off charge created by the user during the attempt | Phase 0b |
 | U39 (revised by revision 2) | Same question, now with tiers: (a) tier 2 automatic failover matching with `DAY_COMPLETE` links, plus bulk confirmation for files; (b) no automatic heuristic links at all, failover overlaps are review items too | (a) | (b) is strictly safer and costs one review item group per failover; (a) keeps failover silent in the common case | Financial correctness against review load | Phase 6b |
 | U41 (new) | While a deletion is in progress (up to 15 minutes), checkout is refused. Acceptable copy: "Account deletion in progress"? | Yes | No visible message (generic error) | UX only | Phase 0b |
+| U43 (new) | May DAY_COMPLETE heuristic auto-linking be enabled despite the generalized collision counterexample? | No automatic heuristic links (U39(b)); tier 2 disabled by default | Enable only with explicit owner acceptance (U39(a)); lower review load but knowingly risks crossed links and incorrect later updates/removals | Financial correctness; owner approval required to enable tier 2 | 6b/6c |
 
 #### 28.4.4 Final readiness assessment
 
@@ -2196,13 +2247,13 @@ What is genuinely implementable today, without any further decision:
 
 What blocks everything else, exactly:
 
-1. **Phase 0b** is blocked by: TD-4 confirmation with the REV-9 revision 2 contract (including the keyring); U21 and U38 (eligibility table); U17 and AS-8 (now a privacy choice only); AS-16 and U42 (Stripe behaviour of mid-payment sessions on a deleted customer); U19 (admin route, or the explicit block until decided); U41 (copy). The REV-2 revision 2 protocol is specified and is no longer a blocker by itself.
-2. **Phase 1 (acceptance)** is blocked by Lionel's review of this assessment and of 28.3, and by the 24.3 and 24.4 items already listed for Phase 1. The ADR must not be marked Accepted while any High finding is unresolved; after this assessment, REV-1 to REV-5 and REV-7 to REV-10 have a specified resolution, and REV-6 waits only on U9.
+1. **Phase 0b** is blocked by: TD-4 confirmation with the REV-9 revision 2 contract (including the keyring); U21 and U38 (eligibility table); U17 and AS-8 (now a privacy choice only); AS-16 and U42 (Stripe behaviour of mid-payment sessions on a deleted customer); U19 (admin route, or the explicit block until decided); U41 (copy). REV-2 revision 3 still blocks shipping until schedules, invoices, async Checkout and post-deletion reconciliation are verified; U42 is not correctly scoped.
+2. **Phase 1 (acceptance)** is blocked by Lionel's review of this assessment and of 28.3, and by the 24.3 and 24.4 items already listed for Phase 1. The ADR must not be marked Accepted while any High finding is unresolved; after this assessment, REV-1/2/9 still have unresolved verification blockers; REV-3 to REV-5 and REV-7/8/10 have specified resolutions, and REV-6 waits only on U9.
 3. **Phases 3 to 5** additionally need the REV-3 matrix and the REV-4 integrity contract reflected in their migrations and tests. Both are specified here.
 4. **Phases 6b and 6c** additionally need U39 (revised) and the REV-1 revision 2 tiers, the `match_basis` column, REV-6 step 3a and the REV-7 rules.
 5. **Phase 7a** needs U9.
 
-The ADR remains **Proposed**. No implementation beyond Phase 0a and the H7 plan change is ready to start.
+The ADR remains **Proposed**. Phase 0a and the H7 plan change are implementable; Phase 0b is not ready to ship. No billing deletion guarantee or ingestion heuristic is approved by this verification
 
 ---
 
