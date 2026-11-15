@@ -2168,6 +2168,8 @@ stateDiagram-v2
 
 ###### REV-1 revision 3: DAY_COMPLETE is not an identity and residual risk is broader
 
+> **Supersedes tier 2 and criteria H/O of revision 2; revision 2 is retained above for audit history.**
+
 *Verification:* revision 2's day-complete test proves equality of daily key sets, not transaction identity. Criterion K generalizes: old source has X(amount A), Y(amount B); new source has X'(amount B), Y'(amount A). Each amount is unique on each side, so all conditions pass although both links are crossed. Same-day reversals, split settlements and FX can create collisions when signed settled-amount keys happen to be unique/equal; otherwise they safely fall back to review (false negatives). "Both sources report posted date" also does not prove timezone normalization; timestamp-only adapters must convert using the institution/account posting timezone, otherwise tier 3.
 
 *Correction (Technical; supersedes tier 2 of revision 2):* DAY_COMPLETE is **not an identity guarantee**. Disable automatic tier-2 links until Lionel explicitly accepts this risk through U39. Default: all failover overlap records become review items; only tier-1 provider identity auto-links. Description/date/amount may order proposed pairs only. Add explicit posted-date normalization: date-only posted field remains a date; timestamp is converted using the adapter's documented institution timezone; unknown semantics => tier 3. Reversals remain separate; split/aggregate and FX settlement differences remain review unless provider identity proves continuity.
@@ -2177,6 +2179,8 @@ stateDiagram-v2
 *Decision:* U39 recommendation becomes (b), no heuristic automatic links. Owner approval remains required to enable (a); no confirmed decision in 24.1 is reopened.
 
 ###### REV-2 revision 3: enumerate every Stripe billing surface before erasure
+
+> **Supersedes the completeness claims and residual-risk statement of revision 2; revision 2 is retained above for audit history.**
 
 *Verification:* revision 2 closes ordinary renewal only conditionally; it does not prove its "no chargeable Stripe state" predicate.
 
@@ -2201,6 +2205,8 @@ stateDiagram-v2
 **P1 status: NOT YET DEMONSTRATED.** Step 4's "no open invoice with automatic collection" is insufficient. U42 is incorrectly scoped: it omits COMPLETE/unpaid asynchronous Checkout and scheduled subscriptions. This remains a Phase 0b blocker, not permission to relax P1.
 
 ###### REV-9 revision 3: expiry is a transition for every non-terminal task
+
+> **Supersedes the destroy_after sweep and expiry acceptance criterion J of revision 2; revision 2 is retained above for audit history.**
 
 *Verification:* revision 2 sweeps only FAILED. A PENDING task (worker unavailable) or IN_PROGRESS task (stuck/lease lost) can retain ciphertext beyond destroy_after indefinitely.
 
