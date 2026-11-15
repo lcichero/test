@@ -1758,7 +1758,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | 4 Data foundation | Not ready | Phase 3; TD-8; AS-5 |
 | 5 Workspace scoping | Not ready | Phase 4; U5, U24, U27, U28, U31, U35 |
 | 6a Ingestion model and locks | Not ready | Phase 5; TD-5, TD-7; AS-6, AS-7 |
-| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 3 (DAY_COMPLETE disabled by default), revision 4 V1-1 to V1-5 and revision 5 V1-6/V1-7 (file/live-feed overlap and stable file-source coverage), V1-3 invalidation idempotency, AS-17, `match_basis`, and the ground-truth property test |
+| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 3 (DAY_COMPLETE disabled by default), revision 4 V1-1 to V1-5 and revision 5 V1-6/V1-7 (file/live-feed overlap and stable file-source coverage), V1-3/V1-8 invalidation lifecycle, AS-17, `match_basis`, and the ground-truth property test |
 | 6c Linking and failover | Not ready | Phase 6b (including REV-1 revision 5 V1-6/V1-7); U5, U7, U8, U34, CU5; AS-1, AS-2; matching/`match_basis`, U39 (inherited from 6b); REV-6 step 3a and REV-7 rules |
 | 7a Households | Not ready | Phases 5, 6c; U9 (REV-6); U3, U6, U10, U16, U22, U23, U25, U26, U29; TD-9 |
 | 7b COLLABORATOR | Not ready | Phase 7a; CU1 to CU4 (CU6 if VIEWER ships) |
@@ -2391,7 +2391,7 @@ What blocks everything else, exactly:
 4. **Phases 6b and 6c** additionally need U39 resolved (recommendation (b), revision 3), the REV-1 revision 3 default, the revision 4 corrections V1-1 to V1-5 (file covered ranges, `MATCH_INVALIDATED`, AS-17), the `match_basis` column, REV-6 step 3a and the REV-7 rules.
 5. **Phase 7a** needs U9.
 
-**Revision 5 verification (2026-11-15).** Phase 0a: ready to implement (definition of done unchanged). Phase 0b: **not ready**; REV-2 revision 5 adds V2-8 to V2-10, so no known protocol defect is claimed closed until those criteria and Stripe test-mode cases pass; blocked by U17 (safety), U42, U44, AS-16, U21, U38, U19, U41 and TD-4. Phase 6b: not ready; add V1-6/V1-7 (file/live coverage) to TD-6, V1-3 idempotent invalidation and V1-2/AS-17; no matching implementation readiness. Phase 6c: not ready; inherits 6b and existing U5/U7/U8/U34/CU5, AS-1/2, REV-6 step 3a and REV-7. This pass does not approve U39(a) or any residual billing risk.
+**Revision 5 verification (2026-11-15).** Phase 0a: ready to implement (definition of done unchanged). Phase 0b: **not ready**; REV-2 revision 5 adds V2-8 to V2-10, so no known protocol defect is claimed closed until those criteria and Stripe test-mode cases pass; blocked by U17 (safety), U42, U44, AS-16, U21, U38, U19, U41 and TD-4. Phase 6b: not ready; add V1-6/V1-7 (file/live coverage) to TD-6, V1-3/V1-8 invalidation lifecycle and V1-2/AS-17; no matching implementation readiness. Phase 6c: not ready; inherits 6b and existing U5/U7/U8/U34/CU5, AS-1/2, REV-6 step 3a and REV-7. This pass does not approve U39(a) or any residual billing risk.
 
 The ADR remains **Proposed**. Phase 0a and the H7 plan change are implementable; Phase 0b is not ready to ship. No billing deletion guarantee or ingestion heuristic is approved by this verification
 
