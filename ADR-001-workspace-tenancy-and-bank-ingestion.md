@@ -559,7 +559,7 @@ Transaction status: `ACTIVE`, `USER_EXCLUDED` (11.7), `REMOVED_BY_PROVIDER`. Eve
 | Provider deletes a transaction | Within the fetched window, a link not returned for two consecutive syncs marks its transaction `REMOVED_BY_PROVIDER` (soft); never hard-deleted automatically |
 | Reversal | A separate bank transaction; imported normally; refund linking stays a Money Records concern |
 | Historical import on reconnect or relink | Same path; links prevent re-import from the same source account; a new source account (new ids) for an account that already has history uses the **overlap boundary** below |
-| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; apply the matching contract of 11.8: a record is linked as `MATCHED` only when its match key has a unique bijection; every other record becomes an `AMBIGUOUS` review item. Per-day counts and sums are only a pre-check, never a basis for a link (REV-1, 28.4). A match against a `USER_EXCLUDED` transaction keeps it excluded |
+| Failover (STANDBY becomes SOURCE) or relink with new ids | Overlap boundary: let `W` = the date of the last transaction from the previous source. Import the new source's transactions dated after `W` normally. For dates up to and including `W`, import nothing automatically; apply the matching contract of 28.4 (REV-1 revision 2): provider continuity links automatically; a failover day links automatically only when it passes the day-complete test (`match_basis = DAY_COMPLETE`, undoable); everything else becomes `AMBIGUOUS` review items. Per-day counts and sums are only a pre-check, never a basis for a link. A match against a `USER_EXCLUDED` transaction keeps it excluded |
 | Akahu `_migrated` transactions | Link added for the new id against the transaction whose link equals `_migrated`; no new row |
 
 Confirmation of the re-issue handling (review item, no automatic merge) is `PENDING` (U37). Removal detection follows D-34 (11.5).
@@ -654,7 +654,7 @@ A separate tombstone table is rejected: the link already identifies the source r
 Several sources may map to one internal account (Q7): a live feed, a CSV of the same account, a later second provider.
 
 - **Coverage.** The covered range of a live-feed SOURCE source account is from the date of its earliest linked record to the date of its last successful sync. Ranges are stored per source account and recomputed at commit of each unit.
-- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. It matches by the **matching contract** of 28.4 (REV-1): key `(account, currency, signed amount, posted date)`; automatic `MATCHED` only when the key has exactly one record and one candidate, or when an exact normalized-description tie-break gives a unique bijection; candidates are `ACTIVE`, `USER_EXCLUDED` and `REMOVED_BY_PROVIDER` transactions not yet linked from that source account. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
+- **Rule.** Only the live-feed SOURCE creates transactions inside its covered range. A file or another source overlapping that range never auto-creates rows there. It follows the **matching contract** of 28.4 (REV-1 revision 2): a file or a different provider is tier 3, so it **never** links automatically inside a covered range; it proposes pairs (ordered by description similarity, which is a heuristic and never an identity) in `AMBIGUOUS_MATCH` items that the user confirms, one by one or in bulk. Amounts are compared only in the account currency as settled, never converted; different currencies never match. Anything it cannot match exactly becomes an `AMBIGUOUS` link with no transaction and an open review item (11.9). Rows outside every covered range import normally as `NEW`. No row is ever silently dropped. This fixes A14.
 - **Known limitation.** Banks and files can date the same transaction differently (posting date against transaction date). Such rows will not match exactly and will arrive as review items instead of duplicates. The user resolves them; FOFI never guesses.
 - **Re-imports.** A file row that already has a link on the same source account is skipped, whatever its outcome. The identity of rows without an id is `PENDING` (TD-6).
 
@@ -800,7 +800,7 @@ What counts as "can renew or charge again" (applies P1 to Stripe states):
 
 Technical design (this ADR):
 
-- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request, before the deletion transaction, as part of the deletion protocol of 28.4 (REV-2): mark the deletion, refuse new checkouts, expire open Checkout Sessions, check all subscriptions, compare recorded webhooks after locking the user row, and delete or fully cancel the Stripe customer after commit.
+- The check is made **live** against Stripe at deletion time, listing **all** subscriptions of the customer (webhook lag and duplicate checkouts make local state insufficient). If Stripe cannot be reached, deletion is refused with a "try again" message (fail closed). It runs again inside the deletion request, before the deletion transaction, as part of the deletion protocol of 28.4 (REV-2 revision 2): mark the deletion, refuse new checkouts, expire open Checkout Sessions, check all subscriptions, then **before** any local erasure cancel what is left, delete the customer (U17 a) or strip its payment methods (U17 b), and verify against Stripe that nothing can charge; only then lock the user row, compare recorded webhooks, and erase. No Stripe cleanup is left to the outbox in the normal path.
 - `subscription` gains Stripe `status`, `cancel_at_period_end` and `cancel_at`, synced from webhooks, for display only (fixes D6).
 - Every Stripe webhook handler ignores events whose owner id no longer exists and never creates or extends an entitlement for it (fixes D5). An event that would grant or renew access for a missing owner enqueues an immediate Stripe cancellation and raises an admin alert for manual refund review. This is defensive only, never part of the normal path.
 
@@ -1121,7 +1121,7 @@ ALTER TABLE subscription ADD COLUMN cancel_at_period_end BOOLEAN;
 ALTER TABLE subscription ADD COLUMN cancel_at TIMESTAMP;
 ```
 
-A deferred constraint trigger on `workspace_membership` rejects a commit that leaves a workspace **that still exists** with zero or several ACTIVE OWNERs (workspaces have no status, 9.2). The full integrity contract (immutable `workspace.type`, composite FK `(workspace_id, workspace_type)`, single-member PERSONAL index, `user_id` CHECK and `ON DELETE RESTRICT`) is in 28.4 (REV-4) and supersedes the `ON DELETE SET NULL` sketch above. The outbox contract is in 28.4 (REV-9). Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
+A deferred constraint trigger on `workspace_membership` rejects a commit that leaves a workspace **that still exists** with zero or several ACTIVE OWNERs (workspaces have no status, 9.2). The full integrity contract (immutable `workspace.type`, composite FK `(workspace_id, workspace_type)`, single-member PERSONAL index, `user_id` CHECK and `ON DELETE RESTRICT`) is in 28.4 (REV-4) and supersedes the `ON DELETE SET NULL` sketch above. The outbox contract, including `outbox_secret` and `outbox_operator_action`, is in 28.4 (REV-9 revision 2). Deletion adds `users.deletion_requested_at`, `users.deletion_attempt_id` and `stripe_customer.remote_closed_at` (REV-2 revision 2). `transaction_source_link` adds `match_basis` (REV-1 revision 2). Column-level detail beyond this belongs in the Phase 4 to 6 migrations, not in this ADR.
 
 ## 18. Migration strategy
 
@@ -1195,7 +1195,7 @@ One database transaction:
 2. For each HOUSEHOLD the user OWNS: dissolve it and erase all its data through the module erasers, delete its memberships and grants, and unmap other members' source accounts from it (their connections stay; connections belong to users) (Q1).
 3. For each other HOUSEHOLD membership: end the membership; Household data stays.
 4. Delete every COLLABORATOR grant the user gave or received.
-5. For each connection: mark REVOKED, enqueue `REVOKE_PROVIDER_TOKEN` carrying the token encrypted (a direct revoke was already attempted before the transaction), then delete the stored tokens (REV-9); fail over partner STANDBY source accounts where applicable.
+5. For each connection: mark REVOKED, enqueue `REVOKE_PROVIDER_TOKEN` with the token encrypted in `outbox_secret` (kept while the task can still be retried, destroyed on DONE or ABANDONED, REV-9 revision 2; a direct revoke was already attempted before the transaction), then delete the stored tokens; fail over partner STANDBY source accounts where applicable.
 6. Erase the PERSONAL workspace: per workspace with an explicit `WorkspaceScope`, delete through each module's `WorkspaceDataEraser`, including blobs by owning entity (transaction attachments, receipt photos, feedback images), not by receipt only.
 7. Delete identity and billing rows (tokens, OAuth, 2FA, preferences, `subscription`, `beta_access`, `stripe_customer`). Feedback submissions are handled per U14 (`PENDING`: delete, or anonymize).
 8. Clear `actor_label` on audit rows of surviving workspaces; `created_by` becomes null through `ON DELETE SET NULL`.
@@ -1455,6 +1455,7 @@ Not decided at ADR level because they do not change architecture, correctness, s
 | AS-13 (E3) | Remaining deletion leftovers (D3b, D3c) | Tests in Phase 0a | Partially verified | 19 |
 | AS-14 (E4) | Concurrency and overlap behaviour of today's importer (S1 to S6 of the E3 and E4 review) | Characterization tests T1 to T5 and T12 in Phase 0 | Pending | 11 |
 | AS-15 | The legacy `household*` tables are empty in production | Row counts | To verify | TD-1, Phase 8 |
+| AS-16 | Stripe: deleting a customer cancels subscriptions in every non-terminal status, and a Checkout Session that is mid-payment cannot complete against a deleted customer (REV-2 revision 2 cancels explicitly, so only its residual risk depends on this) | Stripe test mode, before Phase 0b ships | To verify | 13.3, 19, Phase 0b |
 
 ### 24.7 What happened to the original questions of this section
 
@@ -1731,7 +1732,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2) and outbox contract (REV-9) are now specified; Stripe status fields and the webhook guard can start | TD-4 with the REV-9 contract; U21, U38 (eligibility); U17 and AS-8 (customer backstop, REV-2); U19 (admin route); U3 (OWNER warning text); U41 |
+| 0b Billing safety | **Not ready** (revised by 28.4). The deletion protocol (REV-2) and outbox contract (REV-9) are now specified; Stripe status fields and the webhook guard can start | TD-4 with the REV-9 revision 2 contract and keyring; U21, U38 (eligibility); U17 and AS-8 (privacy choice); AS-16 and U42 (REV-2 revision 2); U19 (admin route); U3 (OWNER warning text); U41 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
@@ -1739,7 +1740,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | 4 Data foundation | Not ready | Phase 3; TD-8; AS-5 |
 | 5 Workspace scoping | Not ready | Phase 4; U5, U24, U27, U28, U31, U35 |
 | 6a Ingestion model and locks | Not ready | Phase 5; TD-5, TD-7; AS-6, AS-7 |
-| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39; REV-1 contract in the tests |
+| 6b Exclusion and reconciliation | Not ready | Phase 6a; TD-6; U32, U36, U37, U39 (revised); REV-1 revision 2 tiers and `match_basis` in the tests |
 | 6c Linking and failover | Not ready | Phase 6b; U5, U7, U8, U34, CU5; AS-1, AS-2; REV-6 step 3a and REV-7 rules |
 | 7a Households | Not ready | Phases 5, 6c; U9 (REV-6); U3, U6, U10, U16, U22, U23, U25, U26, U29; TD-9 |
 | 7b COLLABORATOR | Not ready | Phase 7a; CU1 to CU4 (CU6 if VIEWER ships) |
@@ -1783,6 +1784,8 @@ The assessment was made against the ADR text and against the repository at maste
 
 ##### REV-1: cross-source matching is weaker than the identity rule. **Valid, with one correction.**
 
+> **Superseded in part by revision 2 below (2026-11-15, final technical challenge).** The original text is kept for the audit trail; where the two differ, revision 2 governs.
+
 *Correction.* The review says 11.4 and 11.8 contradict the invariant of 11.1. They do not: 11.1 explicitly allows `date + amount` to be used in 11.4 and 11.8 to attach metadata, never to decide whether a money row exists. Matching in those sections never creates or deletes a money row. The real defect is different and more serious than a wording conflict.
 
 *Actual defects.*
@@ -1816,7 +1819,53 @@ The assessment was made against the ADR text and against the repository at maste
 - E. A debit and a credit of the same absolute amount never match.
 - F. Property test: over randomly generated overlapping histories, no automatic `MATCHED` link ever pairs records whose key differs, and every automatically matched key had a unique bijection.
 
+###### REV-1 revision 2: matching confidence and false positives
+
+*Challenge accepted.* Revision 1 treated an exact normalized-description match as a tie-breaker that could produce an automatic `MATCHED` link. That is a heuristic, not an identity. Two independent sources (a live feed and a CSV, or two providers) routinely describe the same transaction differently ("COUNTDOWN 1234 AUCKLAND" against "Countdown Auckland NZ"), and two different transactions routinely share a description (two identical coffees, two identical bus fares). A unique description match is therefore neither necessary nor sufficient for identity. Revision 1 also let a singleton key (`n = m = 1`) match automatically, which is a false positive when one source is missing a record and the other has a different record that happens to share the key.
+
+*Why it matters financially.* A `MATCHED` link is not metadata only. It is the identity used for every later provider update and for removal detection (D-34). A false positive therefore lets a later correction overwrite, or a later removal hide, the wrong row. A review item costs the user a click; a false link costs a wrong balance that nobody notices. Financial correctness wins over fewer review items.
+
+*Contract (Technical; supersedes the rule of revision 1).* Matches fall into three tiers:
+
+| Tier | Basis | Examples | Outcome |
+|---|---|---|---|
+| **1. Identity** | A provider-documented continuity signal that names the earlier record | Same provider id on the same source account; Akahu `_migrated` on the same connection (10.6) | Automatic `MATCHED`. This is the only tier that is an identity guarantee |
+| **2. Corroborated equivalence** | Two **live feeds of the same institution account** (failover between members' connections of an account the user already linked by confirmation, 10.4), and a **whole day** passes the day-complete test below | Joint account, SOURCE connection dies, STANDBY takes over | Automatic `MATCHED` for that day only. It is a heuristic with strong corroboration, recorded as `MATCHED` with `match_basis = DAY_COMPLETE` so it can be audited and undone |
+| **3. Heuristic only** | Anything else: file against live feed, different providers, different institutions' exports, partial days, any key with more than one record | CSV re-upload over a covered range; a second provider | Never automatic. `AMBIGUOUS_MATCH` review items, with proposed pairs |
+
+**Day-complete test (tier 2).** For one account and one posted date, let the key be `(currency, signed amount in the account currency)`. The day passes only if (a) every key on that day has exactly one record on each side (no repeated amounts at all that day), (b) the two sides have the same set of keys (nothing missing on either side), and (c) both sources report the posted date (not the transaction date) for that account. If any condition fails, the **whole day** becomes review items. A single coincidental key cannot pass, because condition (b) requires the entire day to agree, and condition (a) removes the bucket ambiguity of revision 1.
+
+**Description.** Description similarity is used only to **order proposed pairs** inside a review item. It never creates a link, never breaks a tie automatically, and is never described as identity anywhere in the ADR.
+
+**Currency and conversion.**
+
+- The compared amount is always the amount **in the account's currency, as settled**, exactly as the source reports it. FOFI never converts an amount to compare it, in either direction.
+- Different currencies never match.
+- If either side reports only an original foreign amount, or only a converted estimate (typical of pending card transactions abroad), the record is tier 3: review item.
+- A foreign card purchase that settles with a different amount than its pending, or with a separate foreign-transaction fee line, is never merged by matching. The fee is its own transaction. Pending-to-settled carry-over (11.3) stays metadata only.
+
+**Bulk resolution.** A review item for a tier 3 range offers "accept all proposed pairs for this import" as one explicit user action, with the pairs listed. The choice is the user's and is recorded with `match_basis = USER_CONFIRMED`. This keeps CSV re-uploads usable without FOFI guessing. Whether this bulk action is offered is part of U39.
+
+*Affected.* 11.1, 11.4 (failover row), 11.8 (rule), 11.9 (`AMBIGUOUS_MATCH` gains proposed pairs and bulk accept), `transaction_source_link.match_basis` (`PROVIDER_ID`, `PROVIDER_CONTINUATION`, `DAY_COMPLETE`, `USER_CONFIRMED`), 26, Phases 6b and 6c.
+
+*Acceptance criteria (replace A to F of revision 1).*
+
+- G. A file overlapping a covered range never produces an automatic `MATCHED` link, even when every row has a unique key and an identical description.
+- H. Failover: a day where every key is a singleton on both sides and the key sets are equal matches automatically with `match_basis = DAY_COMPLETE`.
+- I. Failover: a day where one key has two records on each side becomes review items for the whole day.
+- J. Failover: a day where one side has one extra record becomes review items for the whole day, including the keys that would have matched.
+- K. Coincidence test: old source has X(d, 12.00) and lacks Y; new source has Y(d, 12.00) and lacks X; every other key that day agrees. Because both sides have the same key set, this passes (a) and (b). The test documents that tier 2 accepts this case, and asserts that it requires **both** a missing record on each side **and** an identical amount on the same day in one account. It is the residual tier 2 risk, accepted because both feeds come from the same institution account (see residual risk below).
+- L. Different currencies, or a side with only a foreign or estimated amount, never match.
+- M. Two records with different descriptions and the same key never match automatically, and two with identical descriptions never match automatically outside tier 2.
+- N. After a user confirms pairs in bulk, a provider update to one record changes only the row it was paired with, and the link records `USER_CONFIRMED`.
+- O. Property test over generated histories: every automatic link has `match_basis` in (`PROVIDER_ID`, `PROVIDER_CONTINUATION`, `DAY_COMPLETE`), and every `DAY_COMPLETE` link belongs to a day that satisfies (a), (b) and (c).
+- P. A `DAY_COMPLETE` link can be undone by the user, which turns that day into review items without touching money rows.
+
+*Residual risk, stated honestly.* Tier 2 is still a heuristic. The case in K (each feed misses a different transaction with the same amount on the same day, in the same account) would be linked wrongly. Two live feeds of one institution account describe the same ledger, so a record missing from one is itself an anomaly, and the link is marked `DAY_COMPLETE` and is undoable. If Lionel prefers zero automatic heuristic links, tier 2 can be switched off, and failover overlaps then become review items too. That choice is U39 (b).
+
 ##### REV-2: checkout and webhook race at deletion. **Valid, and understated.**
+
+> **Superseded in part by revision 2 below (2026-11-15, final technical challenge).** The original text is kept for the audit trail; where the two differ, revision 2 governs.
 
 *What the code shows.* `StripeCheckoutService` creates a Checkout Session against the user's existing Stripe customer (`setCustomer`, `client_reference_id = ownerId`, subscription metadata `ownerId`). A Checkout Session stays open on Stripe's side for up to 24 hours and can be completed by the browser without any request to FOFI.
 
@@ -1841,6 +1890,67 @@ The assessment was made against the ADR text and against the repository at maste
 - D. A webhook that arrives while the step 3 transaction holds the lock waits, then finds no owner and grants nothing.
 - E. After a successful deletion, the outbox task deletes or fully cancels the customer; a Stripe test-mode check lists no subscription of the customer that is `active`, `trialing`, `past_due`, `unpaid`, `incomplete` or `paused`.
 - F. Stripe unreachable at step 2 refuses deletion and clears the mark.
+
+###### REV-2 revision 2: remote billing cleanup before local erasure
+
+*Challenge accepted: revision 1 did not satisfy P1.* Revision 1 deleted the Stripe customer through the outbox **after** the local deletion committed. Between that commit and a successful outbox run (seconds normally, hours or days if Stripe or the worker fails), the local user no longer exists, nothing in FOFI can show the user what is still pending, and a subscription that Stripe still holds can renew. "The outbox will eventually fix it" is not a guarantee: it can fail terminally (REV-9), and its retry window can outlast a renewal date. P1 requires that deletion cannot leave a future charge or renewal possible, so remote cleanup must be **confirmed before** local erasure commits.
+
+*Stripe facts used (verified against the official API reference on 2026-11-15, API version `2026-10-28`).*
+
+| Fact | Source | Used for |
+|---|---|---|
+| Deleting a customer "permanently deletes a customer. It cannot be undone", "immediately cancels any active subscriptions", removes card details and "prevents any further operations ... (such as adding a new subscription)". A deleted customer can still be retrieved and shows `deleted: true` | `DELETE /v1/customers/{id}` reference | Backstop under U17 (a); verification by retrieve |
+| A Checkout Session can be expired only while `open`; afterwards it cannot be completed; expiring a session that is not `open` returns an error | `POST /v1/checkout/sessions/{id}/expire` reference | Closing remote entry points |
+| Cancelling a subscription ends it immediately and it is not charged again; it becomes largely immutable. **Pending invoice items stay pending and can be billed on another invoice** unless deleted. By default Stripe stops automatic collection of finalized invoices after cancellation | `DELETE /v1/subscriptions/{id}` reference | Explicit cleanup under either U17 option |
+| Idempotency keys apply to v1 `POST` requests only; `GET` and `DELETE` are idempotent by definition and ignore the key. Keys may be pruned after 24 hours, after which a reused key is a new request. A retry with the same key and different parameters errors | Idempotent requests reference | Retry and timeout handling |
+
+*Assumptions not proven by the documentation (recorded as AS-16, to verify in Stripe test mode before Phase 0b ships).*
+
+1. "Any **active** subscriptions" may not cover every non-terminal status (`trialing`, `past_due`, `unpaid`, `incomplete`, `paused`). The design therefore never relies on customer deletion alone: it cancels every non-terminal subscription explicitly first.
+2. Whether a Checkout Session that is mid-payment can still complete after its customer is deleted is not documented. The design expires sessions first and treats any later webhook defensively.
+
+*Protocol (Technical; supersedes steps 2 to 4 of revision 1). No database lock is held during any network call (AP-8).*
+
+1. **Mark (short transaction).** As in revision 1: `users.deletion_requested_at` and a new `deletion_attempt_id` (UUID). New checkouts and plan grants are refused while the mark is set.
+2. **Eligibility (network, no lock).** List open Checkout Sessions of the customer and expire each. List **all** subscriptions (`status = all`). Apply the 13.3 table. If any subscription can renew or charge, refuse and clear the mark: the user cancels in the billing portal (P1, confirmed; FOFI does not cancel a renewing subscription for them).
+3. **Remote cleanup (network, no lock).** Only reached when step 2 found nothing that renews. For every subscription still non-terminal (typically `active` with `cancel_at_period_end = true`, whose remaining days P1 already forfeits), cancel it immediately with `invoice_now = false` and `prorate = false`. Delete the customer's pending invoice items. Then, per U17:
+   - (a) delete the customer;
+   - (b) keep the customer, detach every payment method, and void any open invoice.
+4. **Verify (network, no lock).** Retrieve the customer and list all its subscriptions and open invoices again. Deletion may continue only if: no subscription is in a non-terminal status, no open Checkout Session exists, no invoice is open with automatic collection, and under (a) the customer shows `deleted: true`, or under (b) no payment method is attached. Anything else: refuse and clear the mark.
+5. **Record remote completion (short transaction).** Write `stripe_customer.remote_closed_at` and the `deletion_attempt_id`. From this point the user still exists locally but has no way to be charged. `StripeCheckoutService.ensureCustomer` must treat a closed or deleted customer as absent and create a new one if the user later abandons deletion and subscribes again (new missing guarantee, X-17).
+6. **Local erasure (19.3, one transaction).** Lock the user row. If a Stripe webhook for this customer was recorded after the mark, roll back and return 409 (revision 1, kept). Otherwise erase. Commit.
+7. **After commit.** Only non-billing work remains in the outbox (Akahu revocation, REV-9). Late Stripe webhooks for the missing owner follow 13.3: ignored, never grant access; if one shows a non-terminal subscription, an outbox task cancels it immediately and raises an admin alert for refund review.
+
+*When is deletion complete?* When the step 6 transaction commits. That commit is only possible after step 4 confirmed, against Stripe, that nothing can charge. Billing cleanup is never "pending" for a deleted user in the normal path.
+
+*Failure cases.*
+
+| Case | Result | Why it is correct |
+|---|---|---|
+| Stripe unreachable at step 2, 3 or 4 | Deletion refused with "try again later"; mark cleared; nothing local erased | Fail closed. Steps 3 already done stay done: cancelling a subscription whose renewal was already off, or deleting a customer, never harms a user who still exists |
+| Stripe succeeds at step 3, local transaction fails at step 5 or 6 | The user still exists, with no chargeable Stripe state. Retrying deletion re-runs steps 2 to 4, which are idempotent (cancelling an already-cancelled subscription and deleting an already-deleted customer are treated as success after a retrieve shows the terminal state) | No charge possible, no data lost; the user can retry or keep using FOFI on Free |
+| Ambiguous timeout on a `DELETE` (subscription cancel, customer delete) | Never assumed either way. The next step retrieves the object and reads its state; a terminal state counts as done; otherwise the call is repeated. `DELETE` ignores idempotency keys, so correctness comes from retrieve-then-act, not from the key | Matches Stripe's documented semantics |
+| Ambiguous timeout on a `POST` (session expire, invoice void, payment method detach) | Retried with the same idempotency key, derived from `deletion_attempt_id` and the object id, within the same attempt (seconds, far inside the 24-hour key retention). A "not in an expirable state" error leads to a retrieve: `expired` counts as done; `complete` means a subscription may now exist, so the protocol goes back to step 2 | Same key, same parameters, as Stripe requires |
+| A session is paid between steps 2 and 3 | Step 3 or 4 finds the new subscription. If it can renew, step 4 refuses, the mark is cleared and the user is told to cancel it; nothing is erased | No erasure while anything can renew |
+| A session completes Stripe-side after step 4 | Under (a), the customer is deleted and Stripe prevents new subscriptions on it (documented); under (b), there is no payment method. Any webhook is handled as a missing or closing owner (step 7) | Defensive path only |
+| Webhook processed between step 4 and the step 6 lock | Step 6 sees it and returns 409 | Unchanged from revision 1 |
+
+*Residual risk and P1.* One case remains: a payment that Stripe accepts in the seconds between step 2 and step 3 (the user pays an already-open Checkout Session in another tab at that moment). The protocol does not erase anything in that case (step 4 refuses), so it never ends with a deleted user and a renewable subscription. The user may have been charged once for a subscription they created themselves during the attempt, which is a normal purchase, not a renewal left behind by deletion. **This does not contradict P1**, which forbids a future charge or renewal surviving deletion. The only remaining case is AS-16 (2): if Stripe let a mid-payment session complete against a deleted customer, a one-off charge could occur after deletion. The subscription it would create cannot exist on a deleted customer (documented) and the defensive webhook path refunds it. Until AS-16 is verified, that one-off charge is the stated residual risk, and Lionel must acknowledge it (U42).
+
+*Effect on U17.* Both options now give the billing guarantee synchronously. U17 is a privacy and record-keeping choice again (AS-8), not a safety one.
+
+*Affected.* 13.3, 14 (`DELETE /api/me` reasons), 19.2 (flow), 19.3 (steps), 20, 21, data model (`users.deletion_attempt_id`, `stripe_customer.remote_closed_at`), Phase 0b.
+
+*Acceptance criteria (replace E of revision 1; A to D and F stay).*
+
+- G. With Stripe test mode, after a successful deletion the customer has no subscription in any non-terminal status, no open session, no open invoice with automatic collection and, under (a), shows `deleted: true`. Checked before the local commit by step 4 and again by the test afterwards.
+- H. Fault injection: Stripe returns 500 at step 3. No local data is erased, the mark is cleared, and a retry succeeds.
+- I. Fault injection: the step 6 transaction fails after step 3 succeeded. The user still exists, cannot be charged, and a second deletion attempt succeeds.
+- J. Simulated timeout on the customer `DELETE` after Stripe executed it: the protocol retrieves, sees `deleted: true` and continues without error.
+- K. Simulated timeout on a session expire after Stripe executed it: the retry with the same key returns the saved result, or the retrieve shows `expired`.
+- L. A session completed between steps 2 and 3 makes deletion refuse with nothing erased.
+- M. No network call runs while a database lock is held: a test wraps the Stripe client and fails if it is called inside a transaction holding the user row lock.
+- N. `ensureCustomer` creates a new customer when the stored one is deleted or closed.
 
 ##### REV-3: consolidated-read authority of workspace-scoped tokens. **Valid.**
 
@@ -1972,6 +2082,8 @@ Additional rules:
 
 ##### REV-9: outbox contract too skeletal. **Valid. It also hides a contradiction in the deletion transaction.**
 
+> **Superseded in part by revision 2 below (2026-11-15, final technical challenge).** The original text is kept for the audit trail; where the two differ, revision 2 governs.
+
 *Contradiction found while assessing it.* 19.3 step 5 says "delete tokens, enqueue `REVOKE_PROVIDER_TOKEN`". Revoking an Akahu authorisation needs the token. A task enqueued after its token was deleted cannot run.
 
 *Resolution (Technical).* Minimum outbox contract, added to 17 and 19.3:
@@ -1989,6 +2101,46 @@ Additional rules:
 *Affected.* 17, 19.2, 19.3, 21, TD-4, Phase 0b (and Phase 3 platform work).
 
 *Acceptance criteria.* Two workers never run the same task (concurrency test with two claimers); a worker killed mid-call leaves the task re-claimable after `locked_until`; a 500 then 200 sequence ends DONE after two attempts; a 400 ends FAILED with an alert; the token payload is empty after DONE and after FAILED; the Akahu revoke handler succeeds when the token is already revoked.
+
+###### REV-9 revision 2: recoverable outbox with separated secrets
+
+*Challenge accepted.* Revision 1 erased the encrypted token at DONE **or FAILED**, and also offered a manual retry of FAILED tasks. A failed `REVOKE_PROVIDER_TOKEN` task could then never be retried, because the credential it needs was gone. The fix keeps recoverability and narrows who and what can touch the secret.
+
+*Lifecycle (Technical; supersedes the retention and retry bullets of revision 1).*
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> IN_PROGRESS: worker claims
+    IN_PROGRESS --> DONE: success or provider says already done
+    IN_PROGRESS --> PENDING: retryable error, attempts below max
+    IN_PROGRESS --> FAILED: terminal error or attempts exhausted
+    FAILED --> PENDING: operator retry
+    FAILED --> ABANDONED: operator abandon, or credential expired
+    DONE --> [*]
+    ABANDONED --> [*]
+```
+
+- **Separated secrets.** Credentials never live in `outbox_task.payload`. They live in `outbox_secret(task_id PK FK, key_id, ciphertext, created_at, destroy_after)`. `payload` holds ids only. Admin queries, logs, exports and the admin console never select from `outbox_secret`. Only the worker's handler for a kind that declares a secret may decrypt it, and a test checks that no other class references the repository.
+- **When the secret is destroyed.** On DONE and on ABANDONED, in the same transaction that records the state. A FAILED task **keeps** its secret, because FAILED means "an operator may still retry".
+- **Bounded retention.** `destroy_after` is set at enqueue time to the credential's own expiry, which for Akahu is the provider's maximum token life (10.5). A daily job moves a FAILED task whose `destroy_after` has passed to ABANDONED with reason `CREDENTIAL_EXPIRED` and destroys the secret. At that point the provider no longer honours the token, so revocation is moot and keeping it would only be risk. An admin alert is raised on entering FAILED and again 7 days later.
+- **Operator actions.** Two actions, admin role only, each requiring a typed reason: **Retry** (FAILED to PENDING, resets `attempts`, keeps the secret) and **Abandon** (FAILED to ABANDONED, destroys the secret; the console states that the provider authorisation may stay active until it expires and shows that date). Neither action shows or exports the secret.
+- **Audit.** Every operator action writes `outbox_operator_action(id, task_id, action, actor_user_id, reason, at)`. These rows contain no secret and no personal data beyond the admin's own id, and are kept for the life of the task plus 1 year. Automatic transitions (claims, retries, CREDENTIAL_EXPIRED) are recorded on the task itself.
+- **Encryption and key rotation.** Today `AkahuCredentialCipher` uses a single key from `AKAHU_CREDENTIAL_ENCRYPTION_KEY`, with no key identifier. Phase 0b introduces a small keyring: every ciphertext carries a `key_id`; one key is active for encryption; any listed key can decrypt. Rotation is: add a new key, make it active, re-encrypt `outbox_secret` rows and connection tokens in batches, then remove the old key once no row references it. A test fails if a row references a key id that is not configured. Removing a key is also a destruction mechanism of last resort for every secret encrypted under it.
+- **Backups.** Destroying a row does not remove it from earlier database backups. The ciphertext there stays protected by the key, and the token itself expires at the provider. This is recorded as a known limitation under U12 and U30, not solved here.
+- **Wording rule (kept).** External cleanup is never called "complete" while a task is PENDING, IN_PROGRESS or FAILED. ABANDONED is shown as "abandoned by an operator", never as complete.
+
+*Affected.* 17 (`outbox_task`, `outbox_secret`, `outbox_operator_action`), 19.3 step 5, 21, TD-4, admin console (16.9), Phase 0b.
+
+*Acceptance criteria (replace "the token payload is empty after DONE and after FAILED" of revision 1; the others stay).*
+
+- G. After DONE, the task's `outbox_secret` row is gone; after FAILED it is still present; after ABANDONED it is gone.
+- H. Operator Retry of a FAILED `REVOKE_PROVIDER_TOKEN` task decrypts the kept secret and succeeds against a stub provider; an `outbox_operator_action` row records the actor and reason.
+- I. Abandon destroys the secret, records the action, and the task can no longer be retried.
+- J. A FAILED task past `destroy_after` becomes ABANDONED with `CREDENTIAL_EXPIRED` and its secret is destroyed.
+- K. No admin endpoint, log line or export contains ciphertext or plaintext of a secret (test over the admin API responses and captured logs).
+- L. Key rotation: rows encrypted under key 1 still decrypt after key 2 becomes active; after re-encryption, removing key 1 leaves every row decryptable; a row whose key id is not configured fails the startup check.
+- M. Only the worker's secret-handling class can read `outbox_secret` (ArchUnit).
 
 ##### REV-10: readiness summary understates open invariants. **Partly valid.**
 
@@ -2011,6 +2163,14 @@ Additional rules:
 | X-9 | 8 | "Workspace in which the user is reviewing it" is not a rule | REV-7 |
 | X-10 | 13.3 | "Runs again inside the deletion request" suggested an in-transaction check, which AP-8 forbids; the real guarantee needs the mark and the post-lock comparison | REV-2 steps 1 and 3 |
 | X-11 | 4.8 / D-30 against REV-5 | User erasers are implemented; only workspace erasers and the coverage test are proposed | Noted in REV-5 |
+| X-12 | REV-9 revision 1 | Secret erased at FAILED, yet FAILED tasks are offered a manual retry that needs the secret | REV-9 revision 2 |
+| X-13 | REV-2 revision 1 against P1 | Stripe cleanup after local commit leaves a window, possibly unbounded, where a deleted user's subscription can renew | REV-2 revision 2 (remote first, verified) |
+| X-14 | REV-1 revision 1 | Description equality used as an automatic tie-breaker, although it is a heuristic; singleton keys matched without day-level corroboration | REV-1 revision 2 (tiers, day-complete test) |
+| X-15 | REV-2 revision 1 | Relied on "deleting a customer cancels every subscription"; Stripe documents it for **active** subscriptions only | REV-2 revision 2 (explicit cancellation, AS-16) |
+| X-16 | REV-9 revision 1, REV-2 | Stripe idempotency keys were assumed for every call; Stripe ignores them on `DELETE` and may prune them after 24 hours | REV-2 revision 2 (retrieve-then-act for `DELETE`, keys only within one attempt) |
+| X-17 | `StripeCheckoutService.ensureCustomer` | After remote cleanup and a failed local transaction, the stored customer id points to a deleted or closed customer | REV-2 revision 2 step 5 |
+| X-18 | Subscription cancel semantics | Pending invoice items survive a subscription cancellation and can be billed later | REV-2 revision 2 step 3 (delete them) |
+| X-19 | `AkahuCredentialCipher` | Single key, no key id, so no rotation without downtime | REV-9 revision 2 keyring |
 
 #### 28.4.3 Decisions requiring Lionel's approval
 
@@ -2023,6 +2183,8 @@ None of these was decided here. Each has a recommendation.
 | U21, U38, U19, U14, U30 (existing) | As in 24.3 | Unchanged | Unchanged | REV-2 does not change them | Phases 0a and 0b |
 | U39 (new) | On days with several identical amounts, accept more review items in exchange for never pairing them silently? | Yes, with the grouped one-click "they are the same" resolution | Pair automatically by order of appearance (the earlier text): fewer items, but silent crossed links that later misapply provider corrections | Financial correctness against review fatigue | Phase 6b |
 | U40 (new) | May an MCP grant or REST token ever act on a COLLABORATOR grant? | No for the first release | Yes, with a separate consent line: more agent reach, larger token blast radius | Security: tokens stay "one workspace plus read-only aggregates" | Phase 7b |
+| U42 (new, revision 2) | Accept the residual risk that, until AS-16 is verified, a Checkout Session already mid-payment might complete against a deleted customer and cause one charge (refunded through the admin alert), with no renewal possible? | Yes, and verify AS-16 in Stripe test mode before Phase 0b ships; if AS-16 shows the session cannot complete, the risk disappears | Refuse to ship 0b until AS-16 is verified | P1 is satisfied for renewals in every case; this is only about a one-off charge created by the user during the attempt | Phase 0b |
+| U39 (revised by revision 2) | Same question, now with tiers: (a) tier 2 automatic failover matching with `DAY_COMPLETE` links, plus bulk confirmation for files; (b) no automatic heuristic links at all, failover overlaps are review items too | (a) | (b) is strictly safer and costs one review item group per failover; (a) keeps failover silent in the common case | Financial correctness against review load | Phase 6b |
 | U41 (new) | While a deletion is in progress (up to 15 minutes), checkout is refused. Acceptable copy: "Account deletion in progress"? | Yes | No visible message (generic error) | UX only | Phase 0b |
 
 #### 28.4.4 Final readiness assessment
@@ -2034,10 +2196,10 @@ What is genuinely implementable today, without any further decision:
 
 What blocks everything else, exactly:
 
-1. **Phase 0b** is blocked by: TD-4 confirmation with the REV-9 contract; U21 and U38 (eligibility table); U17 and AS-8 (the backstop of REV-2); U19 (admin route, or the explicit block until decided); U41 (copy). The REV-2 protocol itself is specified and is no longer a blocker.
+1. **Phase 0b** is blocked by: TD-4 confirmation with the REV-9 revision 2 contract (including the keyring); U21 and U38 (eligibility table); U17 and AS-8 (now a privacy choice only); AS-16 and U42 (Stripe behaviour of mid-payment sessions on a deleted customer); U19 (admin route, or the explicit block until decided); U41 (copy). The REV-2 revision 2 protocol is specified and is no longer a blocker by itself.
 2. **Phase 1 (acceptance)** is blocked by Lionel's review of this assessment and of 28.3, and by the 24.3 and 24.4 items already listed for Phase 1. The ADR must not be marked Accepted while any High finding is unresolved; after this assessment, REV-1 to REV-5 and REV-7 to REV-10 have a specified resolution, and REV-6 waits only on U9.
 3. **Phases 3 to 5** additionally need the REV-3 matrix and the REV-4 integrity contract reflected in their migrations and tests. Both are specified here.
-4. **Phases 6b and 6c** additionally need U39 and the REV-1, REV-6 step 3a and REV-7 rules.
+4. **Phases 6b and 6c** additionally need U39 (revised) and the REV-1 revision 2 tiers, the `match_basis` column, REV-6 step 3a and the REV-7 rules.
 5. **Phase 7a** needs U9.
 
 The ADR remains **Proposed**. No implementation beyond Phase 0a and the H7 plan change is ready to start.
