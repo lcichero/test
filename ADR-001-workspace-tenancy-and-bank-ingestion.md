@@ -1869,6 +1869,45 @@ flowchart LR
 | Admin audit rows keep the deleted person's email | Not changed | U45 (new) |
 | Independent verification of this work | Not done | Second reviewer |
 
+
+#### Phase 0a verification and production completion (2026-11-15)
+
+> Supersedes, where they differ, the claims of the "Phase 0a implementation status (2026-11-15)" block above, which is kept unchanged for the record. **Independence caveat:** this verification was carried out by the same agent session that implemented #791 and #792, using adversarial probes against its own work. It is not a second-person review; that is still owed.
+
+*Claim-by-claim check of the status block above.*
+
+| Claim | Verdict | Evidence and correction |
+|---|---|---|
+| V174 adds FKs on "46" owner tables | **Incorrect** | 45 tables (count of `ALTER TABLE` in V174 and of the computed list) |
+| V174 removes only "rows whose owner no longer exists" | **Incorrect** (fixed) | `NOT EXISTS` also matched rows with a NULL `owner_id`, which the FK allows. Fixed in #794 (`owner_id IS NOT NULL AND ...`). Production had 0 NULL owners in those tables (read-only check 2026-11-15 10:22 UTC), so no data was lost |
+| CI on #792 "not run, result not available" | **Incorrect** | CI ran on `c9572cc6` (run 43700029993) and passed |
+| `EventLinksEraser` "redundant by design" | **Incorrect** (fixed) | Hibernate's bulk delete clears only the person's own events' join rows. Another person's event linked to this person's transaction is reached only by `EventLinksEraser`; the mutation test now seeds that link and catches its removal |
+| Schema-driven coverage catches a new personal table | **Verified** | Throwaway migrations: owner table with FK and no eraser, owner table without FK, child table with FK, `storage_key` table whose eraser leaves the file: each failed the build |
+| ... including a child table without an owner column | **Partially verified** (gap closed) | A child table with no owner column and **no FK** was invisible. New rule `everyColumnNamedAfterAPersonalTableHasAForeignKey_orIsListedWithItsReason` fails on it (probe re-run) |
+| Seeder failures are never swallowed | **Partially verified** (fixed) | Parentless "bare" rows that the database refused were dropped silently; now reported and asserted. One known: `loan` (`uq_loan_account`), listed with its reason |
+| Mutation check covers every eraser | **Verified, extended** | Chain removal: 43 of 44 caught, 1 redundant with proof (`transaction_tag` has `ON DELETE CASCADE`, asserted from `pg_constraint`). Source mutation of `SavedQueryEraser` (`... and 1 = 0`) caught |
+| Write fence holds | **Verified** | `FOR UPDATE` blocks `FOR KEY SHARE NOWAIT`; `FOR NO KEY UPDATE` does not (executed). Every owner column outside the feedback tables has an FK to users (asserted from `pg_constraint`) |
+| Deadlock "not tested deterministically" | **Superseded** | Tested: writer locks the account, deletion locks users and waits on the account, writer inserts and waits on users. PostgreSQL reported `deadlock detected` and aborted the **deletion**, which rolled back completely and succeeded on retry. The caller used to get a 500; now a retryable 409 (`GlobalExceptionHandler.handleLockConflict`, #794) |
+| Two application instances | **Missing evidence** (unchanged) | No two-process test; the fence is a database lock, and the tests use separate connections |
+| Feedback unfenced | **Verified as an open gap** | Unchanged; U14 |
+
+*Merges.* #794 into the #792 branch (`d3408406`), #792 into the #791 branch (`98df5cd0`), then #791 into `master`. Local `mvn clean verify` on `9c0d4835`: BUILD SUCCESS, 4362 tests, 0 failures, 0 errors, 0 skipped. CI green on `9c0d4835` (run 43705791218) and on the final #791 head before its merge.
+
+*Production execution (2026-11-15).*
+
+| Step | Result |
+|---|---|
+| Target | Coolify project "Fofito Finance", application `fofito-finance`, its own Postgres container (no other database involved) |
+| Flyway state before | Latest applied: V173 (2026-11-14 19:58 UTC); V174 absent |
+| Backup before | On-demand run of the existing backup container at 11:12:43 UTC: `bankparser-20261115-111243.sql.gz`, 60.7 MB, `gzip -t` OK, 96 `CREATE TABLE`, ends with "dump complete". Daily dump of 02:00 UTC and the D:\Backups copy of 12:00 NZDT also exist |
+| Snapshot before (read-only, 10:56 UTC) | 8 users; 7,737 rows of living owners across the 45 tables; 31 orphan rows (4 `dashboard`, 27 `dashboard_widget`); 0 NULL owners |
+| Mechanism | Normal deploy: squash merge of #791 into `master` as `716f0efe`, pipeline run 43707852712 (backend `mvn verify`, images, Coolify deploy: all success). Flyway ran V174 at backend start-up with the migration role. No SQL was run by hand, Flyway history was not edited |
+| Flyway result | `version 174, success = true, installed 2026-11-15 11:26:09 UTC, execution_time 265 ms, installed_by bankparser`; backend log "Successfully applied 1 migration", application started in 22.5 s, 0 ERROR log lines |
+| Locks and duration | 265 ms in total for the deletes and 45 `ADD CONSTRAINT`; largest table 4,084 rows. No lock waits observed |
+| Snapshot after (read-only, 11:27 UTC) | 8 users; 0 orphan rows; 45 validated `fk_*_owner_user` constraints; living rows per table identical to before except `holding_value_snapshot` +2, which are the price job's normal snapshots of 11:00 and 11:26 |
+| Health | Frontend responds (307 to sign-in); `/api/me` through the proxy returns 401 unauthenticated, so the backend is up |
+| Not done in production | No real account was deleted to exercise the deletion; that is covered by the tests against the same migrations. Creating a throwaway account in production was not authorised |
+
 ### Phase 0b: Billing safety on deletion
 
 - **Objective and scope:** P1 to P4 for the user path; webhook guard; Stripe status fields.
@@ -2082,7 +2121,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
-| 0a Deletion integrity | **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
+| 0a Deletion integrity | **Deployed and production-verified for the implemented scope (2026-11-15):** #791 (with #792 and #794) merged as `716f0efe`, V174 applied on production. Not complete: U14 (feedback), U30 (deleted-id list), U45 (admin audit email) open; second-person review owed. Earlier text: **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
 | 0b Billing safety | **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 (REV-9 lifecycle/keyring); U21/U38; U17 and AS-8; U42/U44; AS-16; U19; U3; U41; V2-8 to V2-10 |
 | 0c Legacy household closure | **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | AS-15 for the plan change |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
@@ -2700,6 +2739,9 @@ DONE and ABANDONED are terminal; every other state reaches one of them by `destr
 | X-39 | Section 19 against the code | "Lock the user row" with JPA `PESSIMISTIC_WRITE` gives `FOR NO KEY UPDATE`, which does not block foreign-key inserts; 46 owner tables had no FK to `users` at all | Native `FOR UPDATE` and V174 |
 | X-40 | 19.3 against U14 | Feedback is kept and unfenced, so an in-flight request can still add feedback for a deleted id | Open until U14 |
 | X-41 | 19.1 against `admin_audit_entry` | Admin audit rows keep the deleted person's email as `target_email` | Open, U45 |
+| X-42 | V174 (first version) | `NOT EXISTS (... u.id = x.owner_id)` treats a NULL owner as an orphan and deletes it | Fixed in #794 |
+| X-43 | Phase 0a status block | "46 tables", "CI not run on #792" and "EventLinksEraser redundant" were wrong | Verification block (2026-11-15) |
+| X-44 | Phase 0a status block "independently verified" wording | The verification was done by the implementing session, not a second person | Independence caveat recorded; second review still owed |
 
 #### 28.4.3 Decisions requiring Lionel's approval
 
@@ -2737,7 +2779,7 @@ What blocks everything else, exactly:
 4. **Phases 6b and 6c** additionally need U39 resolved (recommendation (b), revision 3), the REV-1 revision 3 default, the revision 4 corrections V1-1 to V1-5 (file covered ranges, `MATCH_INVALIDATED`, AS-17), the `match_basis` column, REV-6 step 3a and the REV-7 rules.
 5. **Phase 7a** needs U9.
 
-**Phase 0a implementation (2026-11-15).** Implemented on two unmerged fern-funds branches, tests executed, not independently verified, not deployed; U14, U30 and U45 open. Phases 0b, 6b and 6c remain **NOT READY**; nothing of them was implemented.
+**Phase 0a production (2026-11-15).** Merged as `716f0efe` and deployed; V174 applied on production (265 ms, success). Status: DEPLOYED and production-verified for the implemented scope, not COMPLETE: U14, U30 and U45 open, second-person review owed. Superseded earlier line: Implemented on two unmerged fern-funds branches, tests executed, not independently verified, not deployed; U14, U30 and U45 open. Phases 0b, 6b and 6c remain **NOT READY**; nothing of them was implemented.
 
 **Revision 5 verification (2026-11-15).** Phase 0a: ready to implement (definition of done unchanged). Phase 0b: **not ready**; REV-2 revision 5 adds V2-8 to V2-10, so no known protocol defect is claimed closed until those criteria and Stripe test-mode cases pass; blocked by U17 (safety), U42, U44, AS-16, U21, U38, U19, U41 and TD-4. Phase 6b: not ready; add V1-6/V1-7 (file/live coverage) to TD-6, V1-3/V1-8 invalidation lifecycle and V1-2/AS-17; no matching implementation readiness. Phase 6c: not ready; inherits 6b and existing U5/U7/U8/U34/CU5, AS-1/2, REV-6 step 3a and REV-7. This pass does not approve U39(a) or any residual billing risk.
 
