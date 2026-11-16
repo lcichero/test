@@ -1474,7 +1474,7 @@ Not decided at ADR level because they do not change architecture, correctness, s
 | AS-13 (E3) | Remaining deletion leftovers (D3b, D3c) | Tests in Phase 0a | Partially verified | 19 |
 | AS-14 (E4) | Concurrency and overlap behaviour of today's importer (S1 to S6 of the E3 and E4 review) | Characterization tests T1 to T5 and T12 in Phase 0 | Pending | 11 |
 | AS-15 | The legacy `household*` tables are empty in production | Row counts | **False (read-only check 2026-11-15):** 1 `household` (created 2026-08-17), 1 `household_membership` (status REVOKED), 0 `household_resource_share`. The household owner holds an active PRO plan, so raising the `household` minimum to PRO (H7) removes access from nobody. Phase 8 legacy removal needs a decision on this row (U47) | TD-1, Phase 0c, Phase 8 |
-| AS-16 | Stripe: deleting a customer cancels subscriptions in every non-terminal status, and a Checkout Session that is mid-payment cannot complete against a deleted customer (REV-2 revision 2 cancels explicitly, so only its residual risk depends on this) | Stripe test mode, before Phase 0b ships | To verify | 13.3, 19, Phase 0b |
+| AS-16 | Stripe: deleting a customer cancels subscriptions in every non-terminal status, and a Checkout Session that is mid-payment cannot complete against a deleted customer (REV-2 revision 2 cancels explicitly, so only its residual risk depends on this) | Stripe test mode, before Phase 0b ships | **Partly confirmed 2026-11-16** (28.6.1): subscriptions and schedules yes; invoices, payment intents and sessions are NOT ended by customer deletion; hosted-page tests H-1 to H-3 open (28.6.2) | 13.3, 19, Phase 0b |
 | AS-17 | Akahu exposes a continuation field (`_migrated`) on **transactions**, not only on accounts | Akahu documentation and a recorded payload | To verify | 11.4, 10.6, Phase 6b |
 
 ### 24.7 What happened to the original questions of this section
@@ -2125,7 +2125,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Deployed and production-verified for the implemented scope (2026-11-15):** #791 (with #792 and #794) merged as `716f0efe`, V174 applied on production. Not complete: U14 (feedback), U30 (deleted-id list), U45 (admin audit email) open; second-person review owed. Earlier text: **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10; E-2, E-3 (28.5.7); U49 |
+| 0b Billing safety | **Authorized and in implementation (2026-11-16, 28.6); AS-8 gate OFF, so not shippable to anyone with a Stripe customer.** Milestone 1 (fence, outbox) and milestone 2 (neutralization protocol) on PR #798. Earlier text: **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10; E-2, E-3 (28.5.7); U49 |
 | 0c Legacy household closure | **Done (2026-11-16):** #795 merged as `0e021687`, V175 applied on production. Earlier text: **Implemented, in review (2026-11-16):** H7 in fern-funds PR #795 (V175, 402 gate, tests, Settings copy); approved by Lionel; not merged, not deployed. AS-15 was false but nobody loses access (the only Household owner is on PRO). Earlier text: **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | None. U47 keeps the one legacy row until Phase 8 |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
@@ -2888,6 +2888,84 @@ Technical verification tasks, not product decisions. Each needs recorded evidenc
 |---|---|---|---|
 | U48 | Should pending Household invitations expire (for example after 14 days) and release their seat? | Yes, as a later Household change, not part of 0b | Today a forgotten invitation holds one of the 5 seats until the owner revokes it |
 | U49 | If the direct Akahu token revoke fails during deletion: retry later through an encrypted outbox (needs the versioned cipher of 28.5.6), or refuse the deletion until Akahu answers? | Retry through the outbox with the versioned `AkahuCredentialCipher` | Deletion availability against keeping a secret after commit |
+
+### 28.6 Phase 0b milestone 2: Stripe evidence and the neutralization protocol (2026-11-16)
+
+Lionel authorized Phase 0b implementation on 2026-11-16 without waiting for the manual hosted-page tests below. AS-8 stays OFF: anyone with a Stripe customer cannot delete their account yet, and nothing in this milestone runs against production. The code is on fern-funds branch `feat/phase-0b-deletion-fence-outbox` (PR #798), on top of milestone 1 (deletion fence and durable outbox).
+
+#### 28.6.1 Stripe behaviour confirmed in test mode
+
+Evidence was produced in the "Fofito Finance sandbox" account (`acct_1UERfR2EPq8gmVAo`, test mode only), in two forms:
+
+- **Scripted probes** E1, E3 and E5, with every request and response logged.
+- **The repeatable test `StripeDeletionTestModeTest`.** It is skipped in CI and runs only with a `sk_test_` key in `STRIPE_TEST_MODE_KEY`.
+
+| Behaviour | Result | Evidence |
+|---|---|---|
+| Deleting a customer cancels its subscriptions | Confirmed for `active`, `trialing`, `paused`, `past_due` and `incomplete` | E1, using a test clock to reach `paused` and `past_due`; `StripeDeletionTestModeTest` |
+| Deleting a customer cancels its future subscription schedules | Confirmed (`not_started` becomes `canceled`) | E1, E5, test |
+| Deleting a customer neutralizes open or uncollectible invoices | **No.** They stay `open` or `uncollectible`. Paying them through the API fails ("customer deleted"); paying them through the hosted page is untested | E1, test |
+| Deleting a customer cancels payment intents | **No.** An authorized (`requires_capture`) payment intent was **captured successfully after the customer was deleted**, and the money moved | E1, test |
+| Deleting a customer expires open Checkout Sessions | **No.** They stay `open` | E1, E4, test |
+| Pending invoice items | Survive deletion. They can still be listed by customer and deleted afterwards | E5, test |
+| Listing by a deleted customer | Works for subscriptions, invoices, pending invoice items and payment intents. Fails ("No such customer") for subscription schedules and Checkout Sessions. A session can still be read and expired **by id** | E3, E5 |
+| New objects for a deleted customer | Refused: subscription, invoice, invoice item, payment intent, Checkout Session, payment method attach, customer update | E1 |
+| Full pre-deletion protocol (expire sessions, cancel schedules and subscriptions, void invoices, delete drafts and pending items, cancel payment intents) | Leaves nothing able to charge; a second run finds nothing to do | E3, test |
+| Race: objects created after the last sweep and just before the delete | Payment intents, invoices and pending items were found and ended after the delete. The subscription was cancelled by the delete. The Checkout Session could be expired only because its id was known | E3, test `customerDeletionTask_endsWhatWasCreatedJustBeforeTheDelete` |
+
+**AS-16 is PARTIALLY CONFIRMED, NOT CLOSED.** Nothing above relies on deleting the customer to end an invoice, a payment intent or a session.
+
+#### 28.6.2 Hosted-page tests still open
+
+These need a person entering Stripe's published test card in a browser. They are not claimed safe until run. The objects are prepared in the sandbox. Customer `cus_VdRhGDzULAKo79` is already deleted, and its session and invoice were deliberately left untouched.
+
+| Test | Object | Question |
+|---|---|---|
+| H-1 | Checkout Session `cs_test_a0S8Cudrtk71fQLe2RTlRdlmuaHHvZardkdjZvgkNp3Xx8iduy8v6JzVIg` (subscription, `open` after deletion) | Can it still be completed after its customer was deleted? |
+| H-2 | Checkout Session `cs_test_a080NLU6LsYbDufwJEaINUCYvSLlZxBj9xZeUMmMtGDeRT5heOkb9lttse` (subscription with 7-day trial, `open` after deletion) | Same question, for a trial session (V2-9) |
+| H-3 | Invoice `in_1UcAno2EPq8gmVAoovsPR0NE` (`send_invoice`, `open` after deletion) | Can it still be paid through its hosted invoice page? |
+
+The URLs are kept with the probe output and are not repeated here, because they carry access tokens. The protocol does not depend on the answers: it expires sessions and voids invoices both before the erasure and after the customer is deleted. The answers decide how large the window in 28.6.4 (1) is.
+
+#### 28.6.3 The neutralization sequence as implemented
+
+1. **Checkout records its sessions.** `StripeCheckoutService` stores every Checkout Session id it creates in `stripe_checkout_session` (V179). Sessions are created only under the user row lock, and only while no deletion fence is up.
+2. **The deletion fence is raised in its own committed transaction.** From then on checkout, the Billing Portal and Stripe webhooks for the person are refused or recorded as an interruption (milestone 1).
+3. **Before erasure (`StripeDeletionBillingGuard`, mode `BEFORE_ERASURE`), outside any database transaction:**
+   - The AS-8 gate must be on. While it is off, deletion is refused before any Stripe call.
+   - The stored session ids are read.
+   - Every round inspects, then acts, then inspects again. Open sessions come from the customer listing plus the stored ids.
+   - A subscription that can still renew or charge blocks the deletion: `active` or `trialing` not set to end, `paused`, `past_due` or `unpaid`.
+   - Otherwise the round ends everything else, in this order: open sessions, live schedules, subscriptions, invoices (void open or uncollectible, delete drafts), pending invoice items, then payment intents in `requires_payment_method`, `requires_confirmation`, `requires_action` or `requires_capture`.
+   - A result counts only when a fresh listing shows it. After 3 rounds anything still open, including a `processing` payment intent, makes the deletion refuse ("Billing couldn't be confirmed right now").
+4. **The erasure runs**, under the user row lock, with the fence checked intact. The erasure enqueues one `stripe.customer.delete` outbox task, whose payload carries the customer id and the stored session ids, because the local rows are erased with the person.
+5. **The outbox task (`StripeCustomerDeletionHandler`):**
+   - If the customer still exists, it neutralizes again in mode `AFTER_ERASURE`, which cancels late subscriptions instead of blocking. It deletes the customer only when that is clean.
+   - The deletion is confirmed by a fresh retrieve.
+   - It then runs a **final sweep** in mode `AFTER_CUSTOMER_DELETION`. That sweep lists subscriptions, invoices, pending items and payment intents by the deleted customer, and reads stored sessions by id. Schedules are not listed, because Stripe refuses that after deletion and the deletion cancelled them.
+   - The task is DONE only when the final sweep is clean. Any uncertainty is a retry; credential failures and malformed payloads need an administrator.
+   - A retry after a lost response starts from the remote state: an already deleted customer goes straight to the final sweep. No action is repeated just because its response was lost.
+6. **The deletion record** reaches COMPLETED only when every task in its outbox group is DONE (milestone 1).
+
+#### 28.6.4 Remaining races and limitations
+
+1. **Hosted pages between two sweeps.** If H-1 or H-3 show that a deleted customer's session or invoice can still be paid, there is a window. It runs from the delete to the final sweep, normally seconds, and longer while the task is retrying. Before erasure the window is closed, because the guard expires and voids everything first and the fence stops new sessions.
+2. **A session created in Stripe whose local record rolled back.** It is covered while the customer exists, because the guard also lists by customer. It would be missed only if it is also created after the guard's listing, which the fence prevents.
+3. **`processing` payment intents** cannot be cancelled. Before erasure they refuse the deletion. After erasure the task retries until they settle; one that settles as `succeeded` has taken money and needs an administrator refund. With card-only Checkout (U44) this state is short-lived.
+4. **Billing Portal sessions** cannot be expired through the API. Opening one is refused once the fence is up, but one opened just before can still be used for its short lifetime. Any subscription change it makes is caught by the next inspection (blocking before erasure, cancelled after).
+5. **Operator actions in the Stripe Dashboard** after the final sweep cannot attach new billing to the deleted customer (E1), but an operator could still capture a payment intent created earlier if they did it before the sweep cancelled it. This is controlled procedurally (U42 re-scope, 28.4.3).
+6. **Late webhooks (E-2)** are not covered by this milestone. **Outbox crash recovery (E-3)** is covered for this task by reconciling from remote state. Idempotency keys expire after 24 hours, which is harmless here, because every action is decided by a fresh listing, not by replaying a key.
+7. **AS-8 is OFF.** Until the accountant confirms record keeping, account deletion is refused for anyone with a Stripe customer, so none of steps 3 to 5 runs in production.
+
+#### 28.6.5 Tests
+
+- **Unit tests against a scripted Stripe**, which prove the decision logic only:
+  - `StripeBillingNeutralizerUnitTest` (24 tests), including stored sessions that the listing misses and the post-deletion sweep without session or schedule listings;
+  - `StripeCustomerDeletionHandlerUnitTest` (11), including objects created just before the delete and a final sweep that cannot finish;
+  - `StripeDeletionBillingGuardUnitTest` (7), including stored sessions travelling in the task;
+  - `StripeCheckoutServiceTest` (8), including that the session id is recorded.
+- **`StripeDeletionTestModeTest`** (7, real Stripe test mode, run locally on 2026-11-16, all passing): the deletion behaviour of 28.6.1 as assertions, and the race closed by the final sweep.
+- **The deletion schema and coverage suites** now include `stripe_checkout_session` (seeded, erased, foreign key to `users`).
 
 ---
 
