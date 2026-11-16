@@ -2125,7 +2125,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Deployed and production-verified for the implemented scope (2026-11-15):** #791 (with #792 and #794) merged as `716f0efe`, V174 applied on production. Not complete: U14 (feedback), U30 (deleted-id list), U45 (admin audit email) open; second-person review owed. Earlier text: **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Authorized and in implementation (2026-11-16, 28.6); AS-8 gate OFF, so not shippable to anyone with a Stripe customer.** Milestone 1 (fence, outbox) and milestone 2 (neutralization protocol) on PR #798. Earlier text: **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10; E-2, E-3 (28.5.7); U49 |
+| 0b Billing safety | **Merged and deployed 2026-11-16 (PR #798, `ca282f76`, 28.7): fence, outbox, Stripe neutralization, U49 Akahu revocation, admin recovery. AS-8 gate OFF, so account deletion is still refused for anyone with a Stripe customer.** Earlier text: Authorized and in implementation (2026-11-16, 28.6). Milestone 1 (fence, outbox) and milestone 2 (neutralization protocol) on PR #798. Earlier text: **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10; E-2, E-3 (28.5.7); U49 |
 | 0c Legacy household closure | **Done (2026-11-16):** #795 merged as `0e021687`, V175 applied on production. Earlier text: **Implemented, in review (2026-11-16):** H7 in fern-funds PR #795 (V175, 402 gate, tests, Settings copy); approved by Lionel; not merged, not deployed. AS-15 was false but nobody loses access (the only Household owner is on PRO). Earlier text: **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | None. U47 keeps the one legacy row until Phase 8 |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
@@ -2887,7 +2887,7 @@ Technical verification tasks, not product decisions. Each needs recorded evidenc
 | ID | Question | Recommendation | Why it matters |
 |---|---|---|---|
 | U48 | Should pending Household invitations expire (for example after 14 days) and release their seat? | Yes, as a later Household change, not part of 0b | Today a forgotten invitation holds one of the 5 seats until the owner revokes it |
-| U49 | If the direct Akahu token revoke fails during deletion: retry later through an encrypted outbox (needs the versioned cipher of 28.5.6), or refuse the deletion until Akahu answers? | Retry through the outbox with the versioned `AkahuCredentialCipher` | Deletion availability against keeping a secret after commit |
+| U49 | If the direct Akahu token revoke fails during deletion: retry later through an encrypted outbox (needs the versioned cipher of 28.5.6), or refuse the deletion until Akahu answers? | Retry through the outbox with the versioned `AkahuCredentialCipher` | Deletion availability against keeping a secret after commit (**Implemented 2026-11-16**: outbox retry with the existing cipher, unversioned; see 28.7.2) |
 
 ### 28.6 Phase 0b milestone 2: Stripe evidence and the neutralization protocol (2026-11-16)
 
@@ -2966,6 +2966,77 @@ The URLs are kept with the probe output and are not repeated here, because they 
   - `StripeCheckoutServiceTest` (8), including that the session id is recorded.
 - **`StripeDeletionTestModeTest`** (7, real Stripe test mode, run locally on 2026-11-16, all passing): the deletion behaviour of 28.6.1 as assertions, and the race closed by the final sweep.
 - **The deletion schema and coverage suites** now include `stripe_checkout_session` (seeded, erased, foreign key to `users`).
+
+### 28.7 Phase 0b merged and deployed (2026-11-16)
+
+PR #798 was merged to fern-funds `master` as `ca282f7618fbebc7eff7418eda9ad6a51c7241e6` and deployed automatically. It contains milestone 1 (fence, deletion record, outbox), milestone 2 (Stripe neutralization, 28.6) and U49 (Akahu revocation, commit `55781505`). **AS-8 stays OFF**: anyone with a Stripe customer still cannot delete their account, so the Stripe part of the protocol does not run in production.
+
+#### 28.7.1 Status
+
+| Item | Implemented and merged | Deployed and verified in production | Still pending or not verified |
+|---|---|---|---|
+| V178: deletion fence columns on `users`, `account_deletion`, `outbox_task` | Yes | Applied 2026-11-16 09:21:45 UTC (Flyway: success). Columns and `ck_users_deletion_fence` present; both tables empty | None |
+| V179: `stripe_checkout_session` | Yes | Applied 2026-11-16 09:21:45 UTC (Flyway: success); table empty | None |
+| Outbox worker and deletion settle job | Yes | Running. Index scans on `outbox_task` and sequential scans on `account_deletion` grow every polling interval. No task exists, so no task has run in production yet | First real task in production |
+| Stripe neutralization (28.6) | Yes | Code deployed. The AS-8 gate is OFF: no override of `stripe.delete-customer-on-account-deletion` in the backend environment, default `false` | AS-8 (accountant); hosted-page tests H-1 to H-3 (28.6.2); E-2 late webhooks |
+| U49 Akahu revocation (28.7.2) | Yes | Code deployed; `AKAHU_CREDENTIAL_ENCRYPTION_KEY` present in the backend environment | Never exercised against real Akahu (28.7.3) |
+| Admin recovery for failed deletions (28.7.2) | Yes, backend endpoints only | Deployed. Unauthenticated calls through the public route answer 401 | No admin console screen |
+| Checkout records its sessions, and the fence checks on checkout and webhooks | Yes | Deployed. No checkout has happened since, so no session row exists yet | None beyond the AS-8 items |
+
+Smoke checks after the deployment:
+- All five application containers run image tag `ca282f76`, and Postgres is healthy.
+- The backend started in 26 s, with no ERROR-level log line since. The only WARN lines are the pre-existing Yahoo Finance delisted-symbol notices.
+- `/` redirects to `/login`, which answers 200.
+- `/api/auth/me` and `/api/admin/account-deletions/failed` answer 401 without a session.
+- The actuator health endpoints are not public (401), so they were not used.
+- All checks were read-only. No account was deleted and no credential was revoked.
+
+#### 28.7.2 U49 as implemented
+
+Lionel's decision on U49 (28.5.8) was to retry through the outbox. The implementation differs from the 28.5.6 recommendation in three places, each deliberate:
+
+1. **No direct revoke during the deletion request.** The revocation always runs as an outbox task. The worker picks it up within one polling interval (15 s). That keeps every remote call outside the erasure transaction, as the Stripe guard does, and gives one code path instead of two.
+2. **No separate `outbox_secret` table.** The credential travels in the task's own `payload` column, encrypted.
+3. **No key versioning yet.** The existing `AkahuCredentialCipher` (AES-256-GCM, `AKAHU_CREDENTIAL_ENCRYPTION_KEY`) is used unchanged. No second key system was introduced.
+
+The lifecycle:
+
+- **Capture.** It runs inside the erasure transaction, after the user row is locked and the fence is checked, and before any eraser.
+  - The stored user token is decrypted and re-encrypted together with the app token. The result becomes one `akahu.token.revoke` task in the deletion's outbox group.
+  - The idempotency key names only the deletion. The payload holds no plain text and no owner id.
+  - Because the capture and the erasure commit together, a credential is never erased without its revocation being queued.
+  - A stored token that cannot be decrypted refuses the deletion and erases nothing.
+- **Handler.** Endpoints were checked against Akahu's API reference: `DELETE /v1/token` revokes the bearer user token, and `GET /v1/me` answers 401 when the token is not authorised.
+  1. `GET /me` first. A 401 means the token is already revoked, so the task is DONE without a request. This is how a lost response from an earlier attempt is reconciled.
+  2. `DELETE /token`. Its answer alone decides nothing.
+  3. A fresh `GET /me`. **Only a 401 there makes the task DONE.**
+  - Retried: transport errors, 429, 403, 5xx, unexpected statuses, and a missing key.
+  - Abandoned at once: an undecryptable or malformed payload.
+- **Completion.**
+  - DONE clears the payload.
+  - A task that is retrying or ABANDONED keeps its encrypted payload for recovery.
+  - The deletion record is COMPLETED only when every task in its group is DONE. One abandoned task makes it CLEANUP_FAILED, with an ERROR log naming the deletion id.
+- **Recovery.**
+  - `GET /api/admin/account-deletions/failed` lists failed deletions and their tasks: kind, state, attempts and fixed reason text, never the payload.
+  - `POST /api/admin/account-deletions/{id}/retry-cleanup` requeues the abandoned tasks with a full attempt budget and makes the deletion pending again. It is refused unless the deletion is CLEANUP_FAILED.
+  - Both endpoints are ROLE_ADMIN only and recorded in the admin audit trail.
+- **Redaction.** Outcome reasons are fixed text, at most with an exception class name. Logs carry only the task id, kind, attempt and reason.
+
+Tests:
+- `AkahuTokenRevocationHandlerUnitTest` (13).
+- `AkahuRevocationIntegrationTest` (7): real deletion, real worker, committed transactions. It includes recovery after abandonment and a log capture that asserts no token appears.
+- `AdminAccountDeletionControllerTest` (4).
+- `OutboxWorkerTest` (+2).
+- Full `mvn verify`: 4506 tests, 0 failures. CI was green on `55781505` and on the merge commit.
+
+#### 28.7.3 Known operational limitations
+
+1. **Akahu revocation has not been run against real Akahu.** Akahu's reference does not say whether `DELETE /token` works for personal apps, or what an already revoked token returns. The handler relies only on `GET /me` answering 401 afterwards. A run with a disposable personal-app token is needed before this is called verified.
+2. **A 401 from `GET /me` is read as "no longer usable by us."** If the stored app token were itself invalid, the user token could still be live at Akahu, but this application could not use it either.
+3. **Credential lifetime.** While unresolved, an encrypted credential stays in `outbox_task`: about 20 attempts over several days, then indefinitely while ABANDONED, until an administrator retry succeeds. Abandoned payloads are not purged automatically.
+4. **Key rotation.** Rotating `AKAHU_CREDENTIAL_ENCRYPTION_KEY` makes pending payloads undecryptable. Their tasks fail at once and need manual revocation; stored connections already behave this way. Key versioning (28.5.6) remains a recommendation.
+5. **Visibility** is an ERROR log plus the admin endpoint. No alert or metric is wired, and there is no admin console screen.
+6. **Stripe items** still open from 28.6.4: AS-8, H-1 to H-3, and E-2.
 
 ---
 
