@@ -1391,6 +1391,8 @@ Status `PROPOSED` means the decision is this ADR's engineering proposal: it resp
 
 ### 24.3 Pending product decisions
 
+> **Current state (2026-11-16):** decisions shown here as pending may since have been decided. Section 28.5 governs; the text below is kept unchanged as the record.
+
 Each needs Lionel's explicit choice. The recommendation is a proposal only. "Blocks" names the first phase that cannot be completed without an answer (section 25).
 
 | ID | Question for Lionel | Why it matters | Alternatives | Recommendation and consequences | Blocks |
@@ -1913,7 +1915,7 @@ flowchart LR
 - **Objective and scope:** P1 to P4 for the user path; webhook guard; Stripe status fields.
 - **Modules affected:** `subscription/`, `connectors/stripe/`, `user/` (deletion), `frontend/src/app/settings/page.tsx`.
 - **Prerequisites:** TD-4 (outbox mechanism). U21 and U38 for the eligibility rule; U17 for the Stripe customer action; U19 for the admin route; U3 for the OWNER warning text.
-- **Prerequisite status 2026-11-16 (28.5):** U21, U38, U19, U3, U41, U44 and U42 decided; TD-4 approved in principle only; U17 conditional on AS-8 (accountant). Still open: AS-8, AS-16 and the Stripe test-mode evidence, V2-8 to V2-10, the TD-4 detailed design. **Phase 0b is not ready and is not authorized for implementation.**
+- **Prerequisite status 2026-11-16 (28.5):** U21, U38, U19, U3, U41, U44 and U42 decided; TD-4 approved in principle only; U17 conditional on AS-8 (accountant). Still open: AS-8, AS-16 and the Stripe test-mode evidence, V2-8 to V2-10, evidence E-2 and E-3 (28.5.7), U49, the TD-4 detailed design. **Phase 0b is not ready and is not authorized for implementation.**
 - **Data model:** `subscription.stripe_status`, `cancel_at_period_end`, `cancel_at`; `outbox_task` (TD-4).
 - **API or contracts:** `GET /api/me/deletion-eligibility`; `DELETE /api/me` returns 409 when blocked (section 14).
 - **Migration and backfill:** add columns; a one-off sync from Stripe fills them for existing subscriptions (display only; the deletion check is live).
@@ -2123,7 +2125,7 @@ Test placement follows `docs/ai/testing.md`: integration tests against PostgreSQ
 | Phase | Ready to implement? | Blocked by |
 |---|---|---|
 | 0a Deletion integrity | **Deployed and production-verified for the implemented scope (2026-11-15):** #791 (with #792 and #794) merged as `716f0efe`, V174 applied on production. Not complete: U14 (feedback), U30 (deleted-id list), U45 (admin audit email) open; second-person review owed. Earlier text: **Implemented on unmerged branches, tests executed, not independently verified** (2026-11-15; see the Phase 0a implementation status in section 25). Not complete: U14, U30, U45 open; not merged or deployed. Earlier text: **Ready to implement** (confirmed by 28.4; done only when REV-5's criteria pass), and partly done: household deletion (D1) and the subscription row (D2) are fixed, and stored files are erased. Left: the tables of D3, D3b, and the schema-driven test. The feedback part (U14) and the deleted-id list (U30) can follow in a later PR | U14, U30 for those parts only |
-| 0b Billing safety | **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10 |
+| 0b Billing safety | **Not ready, not authorized (2026-11-16).** Product decisions U3, U19, U21, U38, U41, U42, U44 made (28.5); TD-4 in principle; U17 conditional on AS-8. Earlier text: **Not ready** (revision 5). Stripe protocol has new V2-8 to V2-10: state snapshots/event allowlists do not close TOCTOU, card-only is not proof of no future subscription charge, and pre-mark invoices/PaymentIntents must be neutralized. No billing erasure may ship until all findings and Stripe test cases pass | TD-4 detailed design (REV-9 lifecycle; keyring re-assessed against existing key management); AS-8 (gates U17); AS-16 and Stripe test-mode evidence; V2-8 to V2-10; E-2, E-3 (28.5.7); U49 |
 | 0c Legacy household closure | **Done (2026-11-16):** #795 merged as `0e021687`, V175 applied on production. Earlier text: **Implemented, in review (2026-11-16):** H7 in fern-funds PR #795 (V175, 402 gate, tests, Settings copy); approved by Lionel; not merged, not deployed. AS-15 was false but nobody loses access (the only Household owner is on PRO). Earlier text: **Mostly done:** H5 was fixed in place (#716) rather than by disabling the legacy feature (TD-1 (a) in practice). Left: the `household` feature minimum to PRO (H7) | None. U47 keeps the one legacy row until Phase 8 |
 | 1 ADR acceptance | Waiting on Lionel and the second reviewer | Section 24.3 and 24.4 items listed in Phase 1 |
 | 2 Module structure | **Done** (#775), see the Phase 2 status note | Open leftovers listed there |
@@ -2159,7 +2161,7 @@ This review is additive. It does not change any confirmed product decision in 24
 #### Review disposition
 
 - **ADR status remains Proposed.** This review does not accept it.
-- **No product decisions were made by this review.** U3, U5–U10, U12, U14, U16–U17, U19–U24, U26–U38 and CU1–CU6 remain for Lionel unless explicitly resolved elsewhere in the decision register.
+- **No product decisions were made by this review.** U3, U5–U10, U12, U14, U16–U17, U19–U24, U26–U38 and CU1–CU6 remain for Lionel unless explicitly resolved elsewhere in the decision register. (2026-11-16: several are now decided; see 28.5.)
 - REV-1 through REV-6 are implementation blockers for their named phases, not reasons to abandon the workspace or modular-monolith direction.
 - The review did not independently re-run the repository's test suite or production SQL checks. Statements about current code and completed PRs remain the ADR's recorded findings; the review evaluates their architectural consistency.
 
@@ -2748,6 +2750,8 @@ DONE and ABANDONED are terminal; every other state reaches one of them by `destr
 
 #### 28.4.3 Decisions requiring Lionel's approval
 
+> **Current state (2026-11-16):** decisions shown here as pending may since have been decided. Section 28.5 governs; the text below is kept unchanged as the record.
+
 None of these was decided here. Each has a recommendation.
 
 | ID | Question | Recommendation | Alternatives and trade-offs | Implications | Blocks |
@@ -2769,6 +2773,8 @@ None of these was decided here. Each has a recommendation.
 | U47 (**approved by Lionel, 2026-11-16: keep until Phase 8**) | The one legacy Household in production (owner on PRO, its only membership REVOKED): keep it until Phase 8 migrates or removes legacy households, or delete it now? | Keep until Phase 8; nothing reads it for anyone else | Delete now (simpler Phase 8, but a production data deletion) | Owner approval required for any deletion | Phase 8 |
 
 #### 28.4.4 Final readiness assessment
+
+> **Current state (2026-11-16):** blockers listed here may since have been decided. Section 28.5 governs; the text below is kept unchanged as the record.
 
 What is genuinely implementable today, without any further decision:
 
@@ -2806,7 +2812,7 @@ Recorded from Lionel's approvals of 2026-11-16. The rows of 24.3 keep their orig
 | U44 | Subscription Checkout restricted to cards only | Approved as an **additional safeguard**, not as proof of P1 (V2-9 still applies) | Removes delayed payment methods from the common path | Stripe Checkout configuration in 0b |
 | U42 | **Zero** residual billing risk accepted. Phase 0b must not ship with unresolved Stripe billing scenarios | Approved; closes the "accept a bounded one-off charge" alternative of every earlier U42 row | P1 as written | Every V2-x scenario and AS-16 must be closed by evidence before 0b ships |
 | TD-4 | Durable custom outbox with retries, backoff, idempotency keys and admin visibility | **Approved in principle**; detailed design still to be approved. Prefer the existing encryption and key management over a bespoke keyring | Avoids a second key-management system to operate | REV-9 revision 2 keyring (X-19) to be re-assessed against existing key management before 0b design is final |
-| U26 | A PRO Household holds **6 people in total, including the OWNER**. The configured PRO cap counts invited and active memberships, which never include the OWNER, so it is **5**. Pricing copy: "Household sharing for up to 6 people" | Approved; supersedes the earlier recommendation (a) keep 4, and the reading of #796 (`pro_cap = 6` = 6 members plus the OWNER) | Owner's product choice | See 28.5.2 |
+| U26 | A PRO Household holds **6 people in total, including the OWNER**. The configured PRO cap counts invited and active memberships, which never include the OWNER, so it is **5**. Pricing copy: "Household sharing for up to 6 people". Seat rules in 28.5.5 | Approved; supersedes the earlier recommendation (a) keep 4, and the reading of #796 (`pro_cap = 6` = 6 members plus the OWNER) | Owner's product choice | See 28.5.2 |
 
 #### 28.5.2 Implementation and production status (facts, not decisions)
 
@@ -2815,7 +2821,7 @@ Recorded from Lionel's approvals of 2026-11-16. The rows of 24.3 keep their orig
 | Phase 0a | Completed for the implemented scope (U14, U30, U45 still open) | `716f0efe`, V174 (25, Phase 0a verification) |
 | Phase 0c (H7) | Merged in fern-funds PR #795 as `0e021687`; V175 applied on production | Lionel, 2026-11-16 |
 | U26 first implementation | Merged in fern-funds PR #796 as `46269a2b`; V176 applied on production; configuration became `pro_cap = 6`, `plus_cap = null` | Lionel, 2026-11-16 |
-| U26 correction to 6 people in total | fern-funds PR #797 merged as `232c0cd9` (2026-11-15 21:17 UTC): V177 sets `pro_cap = 5`, plus copy and test changes. This is a code release with a migration, not a configuration-only change. **Not verified here that V177 has run on production**; until it is, assume production still has `pro_cap = 6` (7 people). Whether "Household sharing for up to 6 people" is the live pricing copy is also unverified | `git show 232c0cd9` |
+| U26 correction to 6 people in total | fern-funds PR #797 merged as `232c0cd9` (2026-11-15 21:17 UTC): V177 sets `pro_cap = 5`, plus copy and test changes. This is a code release with a migration, not a configuration-only change. **Verified on production, read-only, 2026-11-16:** `flyway_schema_history` has V175, V176 and V177 with `success = true` (V177 installed 2026-11-15 21:32:25, database clock); the `feature_config` row `household` has `available_from = PRO`, `plus_cap` NULL, `pro_cap = 5`. The running frontend build contains "Household sharing for up to 6 people". The queries ran in a `default_transaction_read_only = on` session; nothing was written. Earlier text (round 1): Not verified here that V177 has run on production; until it is, assume production still has `pro_cap = 6` (7 people). Whether "Household sharing for up to 6 people" is the live pricing copy is also unverified | `git show 232c0cd9`; read-only production queries |
 | Phase 0b | **NOT READY, NOT AUTHORIZED** | 28.5.3 |
 | Phases 6b, 6c | Not started | |
 | ADR status | **Proposed** | |
@@ -2823,8 +2829,10 @@ Recorded from Lionel's approvals of 2026-11-16. The rows of 24.3 keep their orig
 #### 28.5.3 What is still open
 
 - **Unresolved product decisions:** U14 (feedback), U30 (deleted-id list), U39(a) (heuristic auto-linking; recommendation (b) via U43 stands), U45 (admin audit email). Not decided by this section.
-- **Pending verification:** AS-8 (accountant: Stripe invoice retention after customer deletion and NZ record-keeping; gates U17); AS-16 and the Stripe test-mode evidence for V2-8 to V2-10 (gate U42's zero-risk condition); production state of V177.
+- **Pending verification:** AS-8 (accountant: Stripe invoice retention after customer deletion and NZ record-keeping; gates U17); AS-16 and the Stripe test-mode evidence for V2-8 to V2-10 (gate U42's zero-risk condition); evidence items E-2 and E-3 (28.5.7). V177's production state, open in round 1, is verified (28.5.2).
 - **Pending technical design:** TD-4 detailed outbox design and the keyring re-assessment.
+- **U17 if AS-8 fails:** no fallback is approved. Work stops; the alternatives, their billing guarantees, legal implications and technical consequences go back to Lionel. Option (b) (keep the Customer) must not be chosen by default, and Phase 0b does not proceed until Lionel decides.
+- **Round 2 questions:** U48 and U49 (28.5.8).
 - **Phase 0b authorization:** not given. Nothing in this section authorizes implementation.
 
 #### 28.5.4 Contradictions and stale statements found in this pass
@@ -2835,9 +2843,51 @@ Recorded from Lionel's approvals of 2026-11-16. The rows of 24.3 keep their orig
 | X-47 | 24.3 U26, Household creation rule and PENDING list, X-45 | Said the cap was pending or "keep 4" | Marked decided; earlier text kept |
 | X-48 | 28.4.3 | Three U42 rows and two U17 rows coexist, each "superseding" the previous one | 28.5 governs; earlier rows are history |
 | X-49 | Brief of 2026-11-16 vs repository | The brief described the cap correction as a future configuration change; the repository already holds it as migration V177 in #797 | Recorded as merged, production unverified (28.5.2) |
-| X-50 | 28.4.4 | Still lists U21, U38, U19, U41 and the U42 scope as blockers of 0b, and lists 0c as implementable | Left unchanged as the 2026-11-15 record; 28.2 and 28.5 carry the current state |
+| X-50 | 28.4.4 | Still lists U21, U38, U19, U41 and the U42 scope as blockers of 0b, and lists 0c as implementable | Left unchanged as the 2026-11-15 record; a pointer to 28.5 now heads 28.4.4 (round 2) |
 | X-51 | TD-4 vs REV-9 revision 2 | REV-9 revision 2 specifies a bespoke keyring; TD-4 approval prefers existing key management | Open: re-assess in the TD-4 detailed design |
-| X-52 | 28.3 "No product decisions were made" list | Includes U3, U17, U19, U21, U26 and U38, now decided | True of the review itself; left as is |
+| X-52 | 28.3 "No product decisions were made" list | Includes U3, U17, U19, U21, U26 and U38, now decided | True of the review itself; a pointer to 28.5 added (round 2) |
+| X-53 | U26 review wording vs code | The round 2 seat rules name PENDING and EXPIRED invitations; the code has `INVITED` and no expiry state | 28.5.5 uses the code's terms; expiry is U48 |
+| X-54 | REV-9 revision 2 keyring vs TD-4 approval | The keyring was justified for the whole outbox; Stripe tasks need no secret | 28.5.6 limits encrypted payloads to provider-token revocation |
+
+#### 28.5.5 Household seat rules (U26), as implemented
+
+Verified against fern-funds master `232c0cd9`, `ledger/household/HouseholdService.java` and `HouseholdMembershipStatus.java`.
+
+| Rule | Code |
+|---|---|
+| The OWNER is one of the 6 people but never has a membership row, so `pro_cap` excludes the OWNER | `pro_cap = 5` (V177); the refusal message says `cap + 1` people "including its owner" |
+| A seat is taken by an `INVITED` (pending) or `ACTIVE` membership | `enforceHouseholdMemberCap` counts `INVITED` and `ACTIVE` |
+| Accepting an invitation takes no extra seat | `joinByCode` moves the same row from `INVITED` to `ACTIVE` |
+| `DECLINED`, `REVOKED` and `LEFT` release the seat | Not counted |
+| The cap is checked when an invitation is sent, under a lock on the household row, and not again on accept | `invite` locks the household, then checks; accept needs no check because the seat was already reserved |
+| **Invitations never expire.** There is no `EXPIRED` status, so a pending invitation holds its seat until it is accepted, declined or revoked | No expiry state or sweeper |
+| Lowering the cap removes nobody: a household already over the new cap only stops sending invitations | `exceeds` is checked only on invite |
+
+#### 28.5.6 TD-4: what the outbox has to protect
+
+Agreed with the round 2 review: no second key-management system without a demonstrated need. The need is narrower than REV-9 revision 2 assumed.
+
+- **Stripe tasks need no secret.** Cancelling a subscription or schedule, voiding an invoice, expiring a session and deleting a customer need only Stripe object ids, the `deletion_attempt_id` the idempotency key is derived from, and minimal operation metadata. The worker authenticates with the application's existing Stripe API secret from its existing secret configuration. Stripe ids are pseudonymous identifiers, not secrets; they are kept only until the task is terminal and then destroyed with the task (`destroy_after`).
+- **Provider-token revocation is the one concrete need.** `REVOKE_PROVIDER_TOKEN` (19.3 step 5) must revoke an Akahu user token after the connection row is gone, so the token itself has to survive the commit. A direct revoke is attempted first; the outbox copy exists only for its retries.
+- **Recommendation (for review, not approved):** no separate keyring. Evolve the existing `AkahuCredentialCipher`, which already encrypts connection tokens at rest, to write a versioned key id with each ciphertext and to accept a configured list of decryption keys. The same change protects the connection tokens and `outbox_secret`, so there is one key-management mechanism. Its contract must cover: key rotation (add a key, make it active, re-encrypt in batches, retire the old key after the longest task lifetime); a versioned key id on every ciphertext; recovery of old tasks (a task whose key id is still listed decrypts normally); retry after rotation (a task whose key is no longer listed becomes terminal `ABANDONED` with an admin alert, is never retried forever, and its secret is destroyed).
+- **Alternative to weigh:** no encrypted payload at all. If the direct revoke fails, the deletion is refused and the user retries later, as when Stripe is unreachable. This removes `outbox_secret` entirely, at the cost of a deletion that depends on Akahu being up. That is a product trade-off for Lionel (U49, 28.5.8).
+
+#### 28.5.7 Phase 0b evidence plan additions (round 2)
+
+Technical verification tasks, not product decisions. Each needs recorded evidence before Phase 0b can be called ready.
+
+| ID | Check | Status | Already covered by |
+|---|---|---|---|
+| E-1 | V177 production state, actual `pro_cap` and live pricing copy, read-only | **Done 2026-11-16** (28.5.2) | |
+| E-2 | A late Stripe webhook cannot recreate a deleted user's subscription or entitlement, (i) while the deletion outbox tasks are still running after commit, and (ii) after they finish. Tested with replayed event payloads of every handled event type, for a user row that no longer exists | Open | **Partly.** Design: 13.3 missing-owner guard, section 21 failure-mode row, REV-2 step 6 (409 if a webhook was recorded after the mark, before commit), V2-8 (a webhook is not a barrier). Missing: a named test for the after-commit window, both (i) and (ii), asserting that no `subscription` or entitlement row is created |
+| E-3 | Outbox recovery when Stripe executed the operation but the application lost the response: reconciliation retrieves the object and acts on its state, never repeats a side effect, and never reports the account deletion complete on an uncertain result | Open | **Partly.** The REV-2 revision 2 failure table covers an ambiguous `DELETE` (retrieve, then act) and `POST` (same idempotency key) for the pre-erasure steps. Missing: the same for tasks the outbox runs after commit, a worker crash between the Stripe call and recording its result, a retry after the 24-hour idempotency-key retention, and a definition of when the deletion is reported complete |
+
+#### 28.5.8 Questions for Lionel raised in round 2
+
+| ID | Question | Recommendation | Why it matters |
+|---|---|---|---|
+| U48 | Should pending Household invitations expire (for example after 14 days) and release their seat? | Yes, as a later Household change, not part of 0b | Today a forgotten invitation holds one of the 5 seats until the owner revokes it |
+| U49 | If the direct Akahu token revoke fails during deletion: retry later through an encrypted outbox (needs the versioned cipher of 28.5.6), or refuse the deletion until Akahu answers? | Retry through the outbox with the versioned `AkahuCredentialCipher` | Deletion availability against keeping a secret after commit |
 
 ---
 
