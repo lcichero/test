@@ -70,17 +70,19 @@ These came up when the roadmap brief was compared with ADR-001 and the code. Non
 
 | Phase | Equivalent ADR-001 phase | Tasks | VERIFIED | IMPLEMENTED | IN_PROGRESS | BLOCKED | NOT_STARTED |
 |---|---|---|---|---|---|---|---|
-| R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 14 | 7 | 1 | 0 | 0 | 6 |
+| R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 15 | 8 | 0 | 0 | 1 | 6 |
 | R1 Workspace foundation | 3 | 15 | 0 | 0 | 0 | 1 | 14 |
-| R2 Financial resource migration | 4 | 11 | 0 | 0 | 0 | 0 | 11 |
+| R2 Financial resource migration | 4 | 11 | 1 | 0 | 0 | 0 | 10 |
 | R3 Authorization and isolation | 5 (+ context of 3) | 14 | 0 | 0 | 0 | 0 | 14 |
 | R4 Households | 7a | 13 | 0 | 0 | 0 | 2 | 11 |
 | R5 Frontend and admin | spread over 3, 5, 7a | 10 | 0 | 0 | 0 | 0 | 10 |
 | R6 Cleanup and hardening | 8 | 10 | 0 | 0 | 0 | 0 | 10 |
 | Ingestion track (dependency) | 6a, 6b, 6c | 3 | 0 | 0 | 0 | 2 | 1 |
-| **Total** | | **90** | **7** | **1** | **0** | **5** | **77** |
+| **Total** | | **91** | **9** | **0** | **0** | **6** | **76** |
 
-**Overall: about 8% of tasks verified, all of it prerequisite work (deletion integrity, billing safety, legacy closure, module structure). No workspace code exists yet.**
+**Overall: about 10% of tasks verified (9 of 91): the prerequisite work (deletion integrity, billing safety, legacy closure, module structure), the R0-8 table inventory, and R2-1, the classification decisions it settled. No workspace code exists yet.**
+
+Before 2026-11-17: about 8% of tasks verified, all of it prerequisite work (deletion integrity, billing safety, legacy closure, module structure). No workspace code exists yet.
 
 ## 5. Current state (verified 2026-11-16 against the code)
 
@@ -142,15 +144,16 @@ flowchart LR
 | R0-5 | - [x] Household cap of 6 people total via `pro_cap` | VERIFIED | #796, #797; V176, V177 |
 | R0-6 | - [x] Module structure, Spring Modulith strict | VERIFIED | Epic #775 (#776 to #789), `ModularityTest` |
 | R0-7 | - [x] Ownership boundary tests in CI (`OwnerScopingBoundaryTest`, `UnscopedFindAllBoundaryTest`, `AuthorizationBoundaryTest`, `AuthorizationParityTest`) | VERIFIED | Present and green on `master` |
-| R0-8 | - [x] **Table inventory**: every table classified WORKSPACE, USER or REFERENCE (plus LEGACY, RETIRED and AMBIGUOUS dispositions), with module, ownership, FKs, sensitivity, code references and risks | IMPLEMENTED (awaiting Product Owner review; VERIFIED once Q-1 to Q-9 are answered) | [R0-8 inventory](WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md): 98 tables from V1 to V179 applied to PostgreSQL 16. 47 WORKSPACE (39 need their own `workspace_id`), 24 USER, 15 REFERENCE, 12 AMBIGUOUS |
+| R0-8 | - [x] **Table inventory**: every table classified WORKSPACE, USER or REFERENCE (plus LEGACY, RETIRED and AMBIGUOUS dispositions), with module, ownership, FKs, sensitivity, code references and risks | VERIFIED (2026-11-17) | [R0-8 inventory](WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md): 98 tables from V1 to V179 applied to PostgreSQL 16. Submitted at `e17a4ed` (47 WORKSPACE, 24 USER, 15 REFERENCE, 12 AMBIGUOUS). Product Owner review 2026-11-17: Q-1 to Q-9 decided (inventory 6.1, ADR 28.9), four clarifications answered (inventory 9). Now **54 WORKSPACE (47 need their own `workspace_id`), 29 USER, 15 REFERENCE, 0 AMBIGUOUS**. Earlier status: IMPLEMENTED (awaiting Product Owner review; VERIFIED once Q-1 to Q-9 are answered) |
 | R0-9 | - [ ] **Access-path inventory**: every repository method, native query, `JdbcTemplate` call, FQL query table and MCP tool that filters by owner, mapped to its future workspace filter | NOT_STARTED | |
 | R0-10 | - [ ] **Active-context inventory**: the 19 `ActiveContext` consumers and what HOUSEHOLD widening each one does | NOT_STARTED | |
 | R0-11 | - [ ] **Resolve ADR decisions C-1 to C-5** (section 3) and record them in ADR-001 section 24 | NOT_STARTED | |
 | R0-12 | - [ ] **Isolation characterization test generated from the route list**: every `/api/**` route and MCP tool called by user B against user A's ids returns 404 or 403. It becomes the cross-workspace suite in R3 | NOT_STARTED | |
-| R0-13 | - [ ] **Production size check (AS-5)**: row counts per tenant table, to size the R2 backfills | NOT_STARTED | |
+| R0-13 | - [ ] **Production size check (AS-5)**, read-only: row counts per tenant table, to size the R2 backfills. Added by the R0-8 review: null `owner_id` rows in `import_history` and `csv_import_file_snapshot` (Q-8); `event_transactions` rows whose event and transaction have different owners (inventory 9.2); row counts of the four retired ledger tables (Q-6) | NOT_STARTED | |
 | R0-14 | - [ ] **Rollback strategy written**: additive migrations only until R6; each phase's rollback is a revert plus a down script tested on a production copy; full backup before every data migration (backups to PC are already daily) | NOT_STARTED | |
+| R0-15 | - [ ] **Retired ledger cleanup (Q-6)**: a written data-retention assessment against the R0-13 counts, then one dedicated change that drops `journal_entry`, `ledger_node`, `ledger_node_mapping` and `posting` with their triggers, and removes `RetiredLedgerEraser`, its erasure step and the test entries (inventory 9.4). Not part of R2; the tables are not migrated | BLOCKED | Needs the R0-13 counts and the retention assessment. Not authorized to touch production or drop anything yet (ADR 28.9) |
 
-- **Acceptance criteria:** R0-8 to R0-10 are committed and reviewed. R0-12 is green on `master`. C-1 to C-5 are decided.
+- **Acceptance criteria:** R0-8 to R0-10 are committed and reviewed. R0-12 is green on `master`. C-1 to C-5 are decided. R0-15 is done before R2 starts, or explicitly deferred: the retired tables are excluded from R2 either way.
 - **Required tests:** R0-12.
 - **Definition of Done:** every R0 task VERIFIED. ADR-001 is Accepted, or R1 is explicitly authorized (C-5).
 
@@ -202,8 +205,9 @@ flowchart LR
 
 - **Objective:** every workspace-owned row carries `workspace_id NOT NULL`, with database integrity, while `owner_id` keeps working.
 - **Scope:** ADR Phase 4. Schema and backfill only; reads and writes switch in R3.
-- **Dependencies:** R1; the R0-8 inventory; AS-5 (R0-13); TD-8.
-- **Modules and tables:** every table classified WORKSPACE in R0-8. Expected: ledger (account, transaction, category, sub_category, merchant, loan, recurring, attachments, associations, import history), budget, goal, asset, investment, balance, event, forecast labels, dashboard, saved_query, receipt, grocery, csvimport profiles. **USER-scoped and staying on `owner_id`:** subscription, beta_access, stripe_customer, api_token, oauth_grant, feedback, notification preferences, ai_credit_use, user_akahu_connection.
+- **Dependencies:** R1; the R0-8 inventory (VERIFIED); AS-5 and the Q-8 counts (R0-13); TD-8; ADR 28.9 open items OI-1 (blob ownership) and OI-2 (coach context lifecycle) before the storage, receipt and coach PRs.
+- **Modules and tables:** every table classified WORKSPACE in R0-8 (54, of which 47 get their own `workspace_id`, 3 inherit through a single parent under Q-9, and 4 retired ledger tables are not migrated under Q-6). By module: ledger (account, transaction, category, sub_category, merchant, loan, recurring, attachments, associations, import history), budget, goal, asset, investment, balance, event (including `event_transactions` with its own integrity column), forecast labels, dashboard, saved_query, receipt (including the learned rules of Q-2), grocery list (Q-4), csvimport profiles (Q-1). **USER-scoped and staying on `owner_id`:** subscription, beta_access, stripe_customer, api_token, oauth_grant, feedback, notification preferences, ai_credit_use, user_akahu_connection, coach conversations (Q-3, with a workspace context column), Chef recipes and messages (Q-4). Settings moving from `users` to `workspace` (Q-7) are R1 work.
+- **Modules and tables as written before the R0-8 review:** every table classified WORKSPACE in R0-8. Expected: ledger (account, transaction, category, sub_category, merchant, loan, recurring, attachments, associations, import history), budget, goal, asset, investment, balance, event, forecast labels, dashboard, saved_query, receipt, grocery, csvimport profiles. **USER-scoped and staying on `owner_id`:** subscription, beta_access, stripe_customer, api_token, oauth_grant, feedback, notification preferences, ai_credit_use, user_akahu_connection.
 - **Security:** no read path changes yet. The application sets `workspace_id` on every insert; no trigger is added.
 - **Migration and rollback:**
   - Batched Flyway backfill from `owner_id` to the owner's PERSONAL workspace.
@@ -212,17 +216,17 @@ flowchart LR
 
 | # | Task | Status | Evidence |
 |---|---|---|---|
-| R2-1 | - [ ] Confirm the WORKSPACE and USER classification from R0-8, per table, with the Product Owner for the borderline ones (coach conversations U28, dashboards and saved queries U27, grocery, receipts) | NOT_STARTED | |
+| R2-1 | - [x] Confirm the WORKSPACE and USER classification from R0-8, per table, with the Product Owner for the borderline ones (coach conversations U28, dashboards and saved queries U27, grocery, receipts) | VERIFIED (2026-11-17, decisions only; no R2 code) | Product Owner decisions Q-1 to Q-9, ADR 28.9; [R0-8 inventory](WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md) 6.1 |
 | R2-2 | - [ ] Add nullable `workspace_id` and `created_by` columns, one module per PR, leaves first | NOT_STARTED | |
 | R2-3 | - [ ] Every insert path sets `workspace_id` from `CurrentWorkspace` (PERSONAL until R3) | NOT_STARTED | |
 | R2-4 | - [ ] Batched backfill `workspace_id` = owner's PERSONAL workspace, per module | NOT_STARTED | |
 | R2-5 | - [ ] Validation query and test: zero nulls; every row's workspace belongs to its `owner_id`; counts match | NOT_STARTED | |
 | R2-6 | - [ ] `NOT NULL` after R2-5 passes on production | NOT_STARTED | |
-| R2-7 | - [ ] Composite foreign keys `(parent_id, workspace_id)` so a child cannot point to another workspace's parent (ADR 15.3) | NOT_STARTED | |
+| R2-7 | - [ ] Composite foreign keys `(parent_id, workspace_id)` so a child cannot point to another workspace's parent (ADR 15.3) Includes `event_transactions`: own `workspace_id` and a composite FK to both `events` and `transaction` over that column (inventory 9.2), after a read-only count of cross-owner links | NOT_STARTED | |
 | R2-8 | - [ ] Rescope unique keys from `(owner_id, ...)` to `(workspace_id, ...)` (for example account `source/source_ref`, transaction `fit_id`) without dropping the old ones yet | NOT_STARTED | |
 | R2-9 | - [ ] Indexes on `workspace_id` matching today's owner indexes | NOT_STARTED | |
 | R2-10 | - [ ] Deletion and erasers also delete by `workspace_id`; coverage test extended | NOT_STARTED | |
-| R2-11 | - [ ] Data-integrity test in CI against a seeded database (the R2-5 script) | NOT_STARTED | |
+| R2-11 | - [ ] Data-integrity test in CI against a seeded database (the R2-5 script), plus a schema test that every WORKSPACE table without its own `workspace_id` has exactly one tenant reference: its `NOT NULL`, primary-key, `ON DELETE CASCADE` parent FK (Q-9, inventory 9.3) | NOT_STARTED | |
 
 - **Acceptance criteria:**
   - Zero null `workspace_id` on production in every WORKSPACE table.
@@ -237,7 +241,7 @@ flowchart LR
 
 - **Objective:** every read and write is decided by workspace and role. `owner_id` and `User.activeContext` stop being authorization inputs.
 - **Scope:** ADR Phase 5, plus the enforcement half of D-14. Consolidated reads (Q5) are included.
-- **Dependencies:** R2; ADR U5, U24, U27, U28, U31 and U35; C-2.
+- **Dependencies:** R2; ADR U5, U24 and U35; C-2. (U27, U28 and U31 were decided on 2026-11-17, ADR 28.9.)
 - **Modules and tables:** every module with WORKSPACE tables, `websecurity`, `security`, `mcp`, `queryexplorer`, frontend API client.
 - **Security:**
   - The decisive phase.
@@ -376,14 +380,17 @@ The Product Owner has not authorized 6b or 6c. Listed only to make the dependenc
 | Needed before | Items |
 |---|---|
 | R1 | C-1, C-2, C-5; R1-1 (module home) |
-| R2 | R2-1 borderline classification: U27, U28 |
-| R3 | U5, U24, U31, U35; R3-1 permission matrix |
+| R2 | ADR 28.9 open items OI-1 (blob ownership) and OI-2 (coach context lifecycle); the R0-13 counts, including the Q-8 nulls. (R2-1, U27 and U28 decided 2026-11-17) |
+| R3 | U5, U24, U35; R3-1 permission matrix. (U31 decided 2026-11-17: Q-6) |
 | R4 | C-3, C-4; U3 (decided in part), U6, U9, U10 (via C-2), U16, U22, U23, U25, U29; TD-9 |
 | R6 | U47 |
+| R0-15 (retired ledger cleanup) | The read-only R0-13 counts and a written retention assessment (Q-6 condition) |
 
 ## 8. First recommended task
 
-**R0-8: the table inventory**, followed by R0-11 (decide C-1 to C-5). Every later phase depends on knowing, per table, whether it becomes workspace-owned or stays user-owned, and R2 cannot be planned without it. It changes no behaviour.
+**R0-11: decide C-1 to C-5.** R0-8, the table inventory, was VERIFIED on 2026-11-17. The read-only R0-13 counts are next for the data questions it raised (Q-6, Q-8, `event_transactions`).
+
+As written before 2026-11-17: **R0-8: the table inventory**, followed by R0-11 (decide C-1 to C-5). Every later phase depends on knowing, per table, whether it becomes workspace-owned or stays user-owned, and R2 cannot be planned without it. It changes no behaviour.
 
 The first **code** task is **R1-2 to R1-5 and R1-8 as one PR**:
 - the `workspace` and `workspace_membership` tables with their constraints;
@@ -399,3 +406,4 @@ It is additive and invisible to users, and it can be rolled back by dropping two
 | 2026-11-16 | Roadmap created from ADR-001 (Proposed) and an inspection of fern-funds `master` at `ca282f76`. R0-1, R0-2 and R0-4 to R0-7 marked VERIFIED, R0-3 IN_PROGRESS, from merged and deployed evidence. Conflicts C-1 to C-5 raised | This commit |
 | 2026-11-16 | R0-3 VERIFIED: U49 correction merged and deployed | fern-funds #799, `c6447fc5` |
 | 2026-11-16 | R0-8 IMPLEMENTED: table inventory committed for Product Owner review (questions Q-1 to Q-9). Roadmap count corrected: 69 tables carry `owner_id` (65 have entities) | R0-8 inventory, this commit |
+| 2026-11-17 | R0-8 VERIFIED after Product Owner review of `e17a4ed`: Q-1 to Q-9 decided and recorded (inventory 6.1, ADR 28.9); clarifications answered (inventory 9). Classification is now 54 WORKSPACE (47 with their own `workspace_id`), 29 USER, 15 REFERENCE. R2-1 VERIFIED as decisions only. R0-13 extended with the Q-8, `event_transactions` and retired-ledger counts. R0-15 added (retired ledger cleanup, BLOCKED on R0-13 and a retention assessment). R2 and R3 dependencies updated; U27, U28 and U31 decided. No code, schema, migration or production change | ADR 28.9, R0-8 inventory, this commit |

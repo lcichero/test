@@ -868,6 +868,8 @@ The existing database role split (F5: `bankparser_app` at runtime, `bankparser_m
 The database guarantees data integrity, not access:
 
 - Composite FKs `(x_id, workspace_id)` from every child to its parent (transaction to account, category, sub-category, merchant, recurring series; receipt to transaction; attachment to transaction; budget link to envelope and category; loan to account; holding to account; balance assertion to account; holding transaction to holding; source link to transaction). A child can never sit in a different workspace from its parent. Tables that have no FK today (D3) gain one.
+- **Join tables carry `workspace_id` (28.9, Q-9).** A table that links two tenant parents, such as `event_transactions`, has its own `workspace_id NOT NULL` and a composite FK to **each** parent over that one column, so a link between two workspaces is rejected by the database.
+- **Inherited child tables (28.9, Q-9).** A child may omit `workspace_id` only if its one reference to a tenant row is its parent FK, `NOT NULL`, part of its primary key and `ON DELETE CASCADE`, and it has no other `*_id` column. Today: `transaction_tag`, `recurring_series_previous_identity` and `receipt_photo` (the last subject to the blob decision OI-1). A schema test (Phase 4) keeps the rule true.
 - `workspace_id NOT NULL` on every tenant-owned table.
 - Tenant-aware unique keys: every `(owner_id, ...)` unique index becomes `(workspace_id, ...)`.
 - The partial unique indexes and the deferred trigger of section 17 (one PERSONAL per user, at most one HOUSEHOLD, exactly one ACTIVE OWNER). They enforce data shape, not who may act.
@@ -1353,7 +1355,7 @@ Status `PROPOSED` means the decision is this ADR's engineering proposal: it resp
 | D-3 | A user may belong to at most one HOUSEHOLD (product rule, enforced by partial unique index) | Keeps current product shape; schema allows relaxing it later | CONFIRMED (TEN) | 8 |
 | D-4 | Roles OWNER and MEMBER. A VIEWER role is optional: the schema allows it, whether it ships is `PENDING` (U10). The only resource-level grant is COLLABORATOR (D-20) | Q6, COLLABORATOR | CONFIRMED (Q6); VIEWER per U10 | 9 |
 | D-5 | **The OWNER membership is the sole ownership authority.** No `owner_user_id` column. Exactly one ACTIVE OWNER per workspace, enforced by the database. Ownership changes only by explicit transfer to a MEMBER with active PRO (U2); never automatically | Removes drift between two sources | PROPOSED; transfer rule CONFIRMED (U2) | 9 |
-| D-6 | Every tenant-owned row has `workspace_id NOT NULL`; `created_by` nullable with `ON DELETE SET NULL`. A Household owns its resources; `created_by` is audit only and is never an authorization input | R8, R9, Q4, Q6 | CONFIRMED (Q4, Q6); columns PROPOSED | 9.3, 9.4, 17 |
+| D-6 | Every tenant-owned row has `workspace_id NOT NULL`; `created_by` nullable with `ON DELETE SET NULL`. A Household owns its resources; `created_by` is audit only and is never an authorization input. **Exception (Q-9, 28.9):** a single-parent child table may inherit its parent's workspace without its own column, only where the constraints of 15.3 make a cross-workspace row impossible | R8, R9, Q4, Q6, Q-9 | CONFIRMED (Q4, Q6); exception CONFIRMED conditionally (Q-9); columns PROPOSED | 9.3, 9.4, 15.3, 17, 28.9 |
 | D-7 | Writes target one workspace. Consolidated reads are a named, read-only capability computed live from primary tables | R3 without CQRS | PROPOSED | 12 |
 | D-8 | `import_connection` belongs to a user; `source_account` belongs to a connection or file-import target; `account` belongs to a workspace; many source accounts may map to one account | R4, R6, R14, Q7 | PROPOSED | 10 |
 | D-9 | Linking a second source account to an existing internal account is **user-confirmed**. The system may suggest a link only when a strong provider signal matches within the same workspace (for Akahu, the full, unredacted `formatted_account`) | Akahu gives no cross-user identity | PROPOSED | 10.4 |
@@ -1386,12 +1388,14 @@ Status `PROPOSED` means the decision is this ADR's engineering proposal: it resp
 | D-36 | **Endpoint scope declaration.** Every controller method declares `@WorkspaceScoped`, `@UserScoped` or `@AdminScoped`; bulk operations verify every id in the workspace | R9 | PROPOSED | 14, 15.2 |
 | D-37 | **Lifecycle concurrency.** Membership, transfer, grant and dissolution use cases lock the workspace row; deletion locks the user row first; lock order of 11.5 | R16 | PROPOSED | 9.6 |
 | D-38 | **Admin tier 1 kept.** The admin module reads identity and account state and counts, never financial records; counts come from per-module admin-metrics APIs | Existing rule (`AdminTierBoundaryTest`); widening is U33 | PROPOSED | 16.9 |
-| D-39 | **Workspace base currency.** `base_currency` moves from `users` to `workspace`; the PERSONAL workspace takes the user's current value in the Phase 3 backfill | TEN | PROPOSED; Household value per U23 | 7, 17 |
+| D-39 | **Workspace base currency.** `base_currency` moves from `users` to `workspace`; the PERSONAL workspace takes the user's current value in the Phase 3 backfill. **Extended by Q-7 (28.9):** `budget_totals_per_period` and `merchant_auto_categorize_enabled` move with it; `home_page` and the visual and layout preferences stay on the user | TEN, Q-7 | PROPOSED; the Q-7 settings CONFIRMED; Household value per U23 | 7, 17, 28.9 |
 | D-40 | **The ledger is one module.** Account, transaction, category, loan, merchant, recurring and household are parts of one `ledger` module, each a named interface; features built on them are separate modules | Repository owner, 2026-11-15 | **CONFIRMED** (owner) and IMPLEMENTED (#788) | 16.0 |
 
 ### 24.3 Pending product decisions
 
 > **Current state (2026-11-16):** decisions shown here as pending may since have been decided. Section 28.5 governs; the text below is kept unchanged as the record.
+>
+> **2026-11-17:** U27, U28 and U31 were decided in the R0-8 table-inventory review. Section 28.9 governs for them.
 
 Each needs Lionel's explicit choice. The recommendation is a proposal only. "Blocks" names the first phase that cannot be completed without an answer (section 25).
 
@@ -1416,11 +1420,11 @@ Each needs Lionel's explicit choice. The recommendation is a proposal only. "Blo
 | U24 | In which currency is CONSOLIDATED shown when PERSONAL and HOUSEHOLD currencies differ? | Q5 adds two figures that may be in different currencies | (a) The viewer's PERSONAL base currency, converting HOUSEHOLD at the exchange rate of the report date; (b) show the two parts side by side without a total | (a), using the existing `ExchangeRateService`, labelled with the rate date | Phase 5 (consolidated reads) |
 | U25 | What taxonomy does a new Household start with? | Transactions in a Household need categories | (a) The default taxonomy a new user gets; (b) empty; (c) a copy of the OWNER's PERSONAL categories | (a). (c) would copy personal data into a shared workspace, close to what U4 forbids | Phase 7a |
 | U26 | How many members can a Household have? | `V96` seeds a member cap of 4 today | (a) Keep 4, configurable in admin; (b) a different number; (c) no cap | (a) **Decided by Lionel 2026-11-16 (28.5):** (b) **6 people in total, including the OWNER**, so the configured PRO cap (which counts invited and active memberships, never the OWNER) is **5**. Pricing copy: "Household sharing for up to 6 people". Implementation status in 28.5. | Phase 7a |
-| U27 | Are dashboards and saved queries inside a Household shared with all members, or private to their creator? | They are workspace resources in this ADR, which makes them shared | (a) Shared, like every Household resource; (b) private per user inside the workspace | (a), consistent with Q4 and Q6. (b) would add per-user visibility inside a workspace | Phase 5 (Insights) |
-| U28 | Are coach conversations in a Household private to the user who had them? | They may contain personal remarks; Q4 says the Household owns its resources | (a) Private per user, even inside a Household; (b) shared like other resources | (a). A conversation is closer to user correspondence than to financial data | Phase 5 (Insights) |
+| U27 | Are dashboards and saved queries inside a Household shared with all members, or private to their creator? | They are workspace resources in this ADR, which makes them shared | (a) Shared, like every Household resource; (b) private per user inside the workspace | (a), consistent with Q4 and Q6. (b) would add per-user visibility inside a workspace **Decided by Lionel 2026-11-17 (28.9, Q-5):** (a) dashboards and saved queries are WORKSPACE-owned. | Phase 5 (Insights) |
+| U28 | Are coach conversations in a Household private to the user who had them? | They may contain personal remarks; Q4 says the Household owns its resources | (a) Private per user, even inside a Household; (b) shared like other resources | (a). A conversation is closer to user correspondence than to financial data **Decided by Lionel 2026-11-17 (28.9, Q-3):** (a) coach conversations stay USER-owned and private, with the workspace they are about recorded as context. | Phase 5 (Insights) |
 | U29 | Invitation rules: expiry, invitee already in another Household, re-invites | Product rules for Phase 7a | Expiry 7, 14 or 30 days or none; refuse or queue an invitee who is already in a Household | 14-day expiry; refuse an invitee who is already in a Household (D-3); the OWNER can resend | Phase 7a |
 | U30 | If a database backup is restored, how are accounts deleted after that backup kept deleted? | A restore would bring them back, breaking P2 | (a) Keep a minimal list of deleted user ids and deletion times, with no personal data, used only to re-apply deletions after a restore, purged after the backup retention period; (b) accept the risk and handle restores manually | (a). Small, operational, never user-facing. Needs U12 alignment | Phase 0a (list only); restore runbook |
-| U31 | Is the internal accounting ledger kept (DEBT-011)? | It must be workspace-scoped if kept | (a) Keep, workspace-scoped, rebuilt from records; (b) remove before Phase 5 | Decide before Phase 5. If undecided, (a) as the lower-risk path | Phase 5 |
+| U31 | Is the internal accounting ledger kept (DEBT-011)? | It must be workspace-scoped if kept | (a) Keep, workspace-scoped, rebuilt from records; (b) remove before Phase 5 | Decide before Phase 5. If undecided, (a) as the lower-risk path **Decided by Lionel 2026-11-17 (28.9, Q-6), conditionally:** (b) the retired tables are not migrated and are dropped in a dedicated cleanup change, after a read-only production row-count and data-retention assessment. | Phase 5 |
 | U32 | In a Household, who may resolve ingestion review items, and what reminders exist? | Items block nothing but leave data unimported | (a) Any OWNER or MEMBER; (b) the connection's user only | (a), with a count badge; no emails | Phase 6b |
 | U33 | Does the admin console stay at tier 1 (no access to anyone's financial data) for v1? | Support cases may ask for more | (a) Tier 1 only; (b) a consent-based support mode; (c) audited break-glass | (a) for v1. Any widening needs its own design | None (confirmation) |
 | U34 | Is a newly discovered bank account created automatically, or always reviewed first? | Today accounts are created automatically; 10.4 makes every new account wait for review | (a) Create automatically in the PERSONAL workspace when no link suggestion exists in any workspace of the user; otherwise a review item; (b) always review | (a). Keeps today's convenience for the common case and asks only when a joint account may exist | Phase 6c |
@@ -3078,6 +3082,47 @@ The outbox payload rule is back to "identifiers only, never a secret".
 - The **U49** question is withdrawn as not applicable to the current integration.
 - 28.7.2 and the limitations 28.7.3 (1) to (4) no longer apply.
 - The production deployment `ca282f76` contained the remote revocation. It never ran, because no account was deleted between that deployment and this correction (`outbox_task` was empty when checked on 2026-11-16).
+
+### 28.9 Product Owner decisions of 2026-11-17: R0-8 table classification
+
+Recorded from the Product Owner's review of the R0-8 table inventory ([WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md](WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md), reviewed at `e17a4ed`). The inventory's method and classification were accepted as the baseline. The 24.3 rows for U27, U28 and U31 keep their questions and carry a "Decided" note pointing here; D-6 and D-39 in 24.2 and the integrity rules of 15.3 are amended in place. Where this section and an earlier row differ, this section governs.
+
+#### 28.9.1 Decisions
+
+| ID | Decision | Kind | Rationale | Effect |
+|---|---|---|---|---|
+| Q-1 | `csv_import_profile` is WORKSPACE-owned | Approved | It names a default account, which is workspace data | Own `workspace_id`; unique key and default-account FK scoped to the workspace |
+| Q-2 | `receipt_item_rule`, `receipt_product_category` and `receipt_product_link` are WORKSPACE-owned | Approved | They map products into the workspace's own taxonomy | Own `workspace_id`; `receipt_product_category.category_id` gains a composite FK |
+| Q-3 | Coach conversations remain USER-owned and private, with workspace context | Approved; **decides U28 (a)** | A conversation is personal correspondence, not shared financial data | `coach_conversation`, `coach_message`, `coach_prompt` are USER; the conversation records the workspace it was about. Answers may only draw on workspaces the user can still access |
+| Q-4 | Grocery lists are WORKSPACE-owned; Chef recipes and conversations are USER-owned | Approved | A shared shopping list is the Household case; recipes are personal | `grocery_item`, `grocery_aisle_choice`, `grocery_suggestion_skip` WORKSPACE; `chef_recipe`, `chef_message` USER |
+| Q-5 | Dashboards and saved queries are WORKSPACE-owned | Approved; **decides U27 (a)** | Consistent with Q4 and Q6 | `dashboard`, `dashboard_component`, `dashboard_widget`, `saved_query` WORKSPACE |
+| Q-6 | The retired ledger tables are not migrated and are dropped in a dedicated cleanup change, after a read-only production row-count and data-retention assessment | **Conditional approval**; **decides U31 (b)** | No code has read or written them since fern-funds #720; the data was a projection of transactions | `journal_entry`, `ledger_node`, `ledger_node_mapping`, `posting` get no `workspace_id`. The drop waits for the assessment. This decision authorizes no production access and no drop |
+| Q-7 | `base_currency`, `budget_totals_per_period` and `merchant_auto_categorize_enabled` move to the workspace; `home_page` and the visual and layout preferences remain user-owned | Approved; **extends D-39** | The three change how a workspace's money is shown or processed | The Phase 3 (R1) backfill copies the three values into the PERSONAL workspace |
+| Q-8 | A null `owner_id` on `import_history` or `csv_import_file_snapshot` is an anomaly | Approved, with conditions | A row with no owner has no defensible workspace | Read-only counts before Phase 4 (R2). No invented workspace assignment and no automatic repair. Any remediation needs a documented, reviewed and auditable plan |
+| Q-9 | A child collection or join table may inherit workspace ownership without its own `workspace_id`, provided database constraints guarantee parent ownership and prevent cross-workspace associations | **Conditional approval**; **amends D-6** | No redundant column where the schema already makes a cross-workspace row impossible | The rule is in 15.3. Three tables qualify. `event_transactions`, a join of two parents, does not, and takes its own column |
+
+#### 28.9.2 Clarifications answered before R0-8 was VERIFIED
+
+The full evidence is in the inventory, section 9.
+
+1. **`grocery_aisle_choice` and `grocery_suggestion_skip`** have no parent FK. They are not children of `grocery_item` but learned state of the shopping list, keyed by `(owner_id, term)` and `(owner_id, product_key)`. Under Q-4 each is WORKSPACE with its own `workspace_id`, and both unique keys are rescoped. In a Household, one member's aisle choice or skipped suggestion applies to every member.
+2. **`event_transactions`** relies only on `EventService`'s owner checks today. Required: its own `workspace_id NOT NULL`, `UNIQUE (id, workspace_id)` on `events` and `transaction`, and two composite FKs over the shared column. Before adding them, a read-only count of existing cross-owner links, handled under the Q-8 rule if any exist.
+3. **The inherited tables** `transaction_tag`, `recurring_series_previous_identity` and `receipt_photo` each have a single `NOT NULL` parent FK in their primary key with `ON DELETE CASCADE`, and no other reference to a tenant row, so a cross-workspace row cannot exist. A schema test in Phase 4 (roadmap R2-11) keeps that true.
+4. **The retired ledger** has no active application behaviour (only the deletion eraser, two tests and the owner-stamping trigger name it) and no retention dependency found in the code or documents. The production row counts and the written retention assessment are still needed before the cleanup change.
+
+#### 28.9.3 Open items raised by this review
+
+| ID | Item | Needed before |
+|---|---|---|
+| OI-1 | `attachment_blob` ownership. 15.3 says the blob table gains `workspace_id` (O1); the R0-8 inventory (4.5) records it as having no owner, with access checked through the owning row. If O1 is adopted, `receipt_photo` gains a second tenant reference and must take its own `workspace_id` | Phase 4 (R2) design of the receipt and storage PRs |
+| OI-2 | Lifecycle of a coach conversation's workspace context when that workspace is dissolved or the user leaves it (Q-3) | Phase 4 (R2) coach PR |
+| OI-3 | Read-only production counts: the Q-8 nulls, `event_transactions` cross-owner links, and the retired-ledger row counts (roadmap R0-13) | Phase 4 (R2); the Q-6 cleanup change |
+| OI-4 | fern-funds `docs/ENGINEERING_DEBT.md` still lists DEBT-011 as "Not started", although #720 removed the ledger and Q-6 decides U31. Stale; outside this repository | The next fern-funds docs change |
+
+#### 28.9.4 Status
+
+- R0-8 is **VERIFIED** (documentation). No code, schema, migration or production change was made, and Phases 3 and 4 (R1, R2) have not started.
+- ADR status: **Proposed**, unchanged.
 
 ---
 
