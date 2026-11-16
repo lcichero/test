@@ -71,14 +71,14 @@ These came up when the roadmap brief was compared with ADR-001 and the code. Non
 | Phase | Equivalent ADR-001 phase | Tasks | VERIFIED | IMPLEMENTED | IN_PROGRESS | BLOCKED | NOT_STARTED |
 |---|---|---|---|---|---|---|---|
 | R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 15 | 8 | 0 | 0 | 1 | 6 |
-| R1 Workspace foundation | 3 | 15 | 0 | 0 | 0 | 1 | 14 |
+| R1 Workspace foundation | 3 | 15 | 0 | 0 | 10 | 1 | 4 |
 | R2 Financial resource migration | 4 | 11 | 1 | 0 | 0 | 0 | 10 |
 | R3 Authorization and isolation | 5 (+ context of 3) | 14 | 0 | 0 | 0 | 0 | 14 |
 | R4 Households | 7a | 13 | 0 | 0 | 0 | 2 | 11 |
 | R5 Frontend and admin | spread over 3, 5, 7a | 10 | 0 | 0 | 0 | 0 | 10 |
 | R6 Cleanup and hardening | 8 | 10 | 0 | 0 | 0 | 0 | 10 |
 | Ingestion track (dependency) | 6a, 6b, 6c | 3 | 0 | 0 | 0 | 2 | 1 |
-| **Total** | | **91** | **9** | **0** | **0** | **6** | **76** |
+| **Total** | | **91** | **9** | **0** | **10** | **6** | **66** |
 
 **Overall: about 10% of tasks verified (9 of 91): the prerequisite work (deletion integrity, billing safety, legacy closure, module structure), the R0-8 table inventory, and R2-1, the classification decisions it settled. No workspace code exists yet.**
 
@@ -175,21 +175,21 @@ flowchart LR
 
 | # | Task | Status | Evidence |
 |---|---|---|---|
-| R1-1 | - [ ] Decide the module home: inside `user` or a new `workspace` module with `allowedDependencies`. Recommended: new `workspace` module, depended on by `user` for creation at registration | NOT_STARTED | |
-| R1-2 | - [ ] Flyway: `workspace` with `type IN ('PERSONAL','HOUSEHOLD')` and `base_currency` | NOT_STARTED | |
-| R1-3 | - [ ] Flyway: `workspace_membership` with `role IN ('OWNER','MEMBER','VIEWER')` (VIEWER per C-2), `status IN ('INVITED','ACTIVE','LEFT','REMOVED')`, and unique `(workspace_id, user_id)` | NOT_STARTED | |
-| R1-4 | - [ ] Constraint: exactly one ACTIVE OWNER per workspace (partial unique index plus a deferred check, or a service-level lock plus an integrity test; ADR D-5) | NOT_STARTED | |
-| R1-5 | - [ ] Constraint: at most one PERSONAL workspace per user and at most one ACTIVE HOUSEHOLD membership per user (partial unique indexes, D-2 and D-3) | NOT_STARTED | |
-| R1-6 | - [ ] JPA entities `Workspace`, `WorkspaceMembership`, and repositories with workspace-scoped finders only | NOT_STARTED | |
-| R1-7 | - [ ] PERSONAL workspace created in the same transaction as registration (local, OAuth, admin-created). Invariant test: no user without exactly one | NOT_STARTED | |
-| R1-8 | - [ ] Backfill migration: one PERSONAL workspace and OWNER membership per existing user; `base_currency` copied from `users` (D-39). Generic SQL, no ids | NOT_STARTED | |
+| R1-1 | - [ ] Decide the module home: inside `user` or a new `workspace` module with `allowedDependencies`. Recommended: new `workspace` module, depended on by `user` for creation at registration | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): new `workspace` Spring Modulith module, `allowedDependencies = {security, user}`; `user` publishes events and knows nothing of workspaces; `ModularityTest` green |
+| R1-2 | - [ ] Flyway: `workspace` with `type IN ('PERSONAL','HOUSEHOLD')` and `base_currency` | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): V180 `workspace` with type CHECK, `base_currency`, `UNIQUE (id, type)`, immutable type trigger |
+| R1-3 | - [ ] Flyway: `workspace_membership` with `role IN ('OWNER','MEMBER','VIEWER')` (VIEWER per C-2), `status IN ('INVITED','ACTIVE','LEFT','REMOVED')`, and unique `(workspace_id, user_id)` | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): V180 `workspace_membership`, roles OWNER, MEMBER, VIEWER; statuses per ADR 9.2 (INVITED, ACTIVE, DECLINED, REVOKED, LEFT); `UNIQUE (workspace_id, user_id)`; composite FK to `(id, type)`; `user_id` RESTRICT |
+| R1-4 | - [ ] Constraint: exactly one ACTIVE OWNER per workspace (partial unique index plus a deferred check, or a service-level lock plus an integrity test; ADR D-5) | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): partial unique index (at most one) plus deferred constraint trigger (exactly one at commit); `WorkspaceSchemaConstraintsTest` |
+| R1-5 | - [ ] Constraint: at most one PERSONAL workspace per user and at most one ACTIVE HOUSEHOLD membership per user (partial unique indexes, D-2 and D-3) | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): partial unique indexes for one PERSONAL per user, one member per PERSONAL, one ACTIVE HOUSEHOLD membership per user (ACTIVE only, per Product Owner; INVITED is U29); `WorkspaceSchemaConstraintsTest` |
+| R1-6 | - [ ] JPA entities `Workspace`, `WorkspaceMembership`, and repositories with workspace-scoped finders only | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): `Workspace`, `WorkspaceMembership`, repositories with membership- or person-scoped finders only; `WorkspaceRepositoryTest` |
+| R1-7 | - [ ] PERSONAL workspace created in the same transaction as registration (local, OAuth, admin-created). Invariant test: no user without exactly one | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): `UserCreated` from local sign-up, first OAuth sign-in and bootstrap admin, handled in the same transaction; `UserCreationPersonalWorkspaceTest`, `UserCreationPathsTest` |
+| R1-8 | - [ ] Backfill migration: one PERSONAL workspace and OWNER membership per existing user; `base_currency` copied from `users` (D-39). Generic SQL, no ids | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged): V181 generic, idempotent backfill copying `base_currency`; kept in sync via `UserBaseCurrencyChanged`; `PersonalWorkspaceBackfillTest`. Production count after deploy still to do |
 | R1-9 | - [ ] `CurrentWorkspace` resolver: workspace id from the `X-Fofi-Workspace` header, validated against an ACTIVE membership, cached per request. Not yet used for authorization | NOT_STARTED | |
 | R1-10 | - [ ] `GET /api/me/workspaces`: the caller's workspaces with type, role and name | NOT_STARTED | |
 | R1-11 | - [ ] `workspace_id` on `api_token` and `oauth_grant`, backfilled to the PERSONAL workspace; new tokens require one (D-14) | NOT_STARTED | |
 | R1-12 | - [ ] Scheduled jobs run per explicit workspace (`WorkspaceTask`), not from a stored user context | NOT_STARTED | |
 | R1-13 | - [ ] Lifecycle services (create Household, invite, accept, leave, remove, transfer, dissolve) with the workspace-row lock of D-37, not exposed by any controller | BLOCKED | Needs C-1, C-2 and the R4 decisions on transfer and dissolution |
-| R1-14 | - [ ] Account deletion erases the user's workspaces and memberships: a `WorkspaceDataEraser` step; an OWNER deletion dissolves their Household (Q1) | NOT_STARTED | |
-| R1-15 | - [ ] Tests: lifecycle invariants, the backfill (each existing user gets exactly one PERSONAL workspace), registration paths, header validation, token scoping, deletion | NOT_STARTED | |
+| R1-14 | - [ ] Account deletion erases the user's workspaces and memberships: a `WorkspaceDataEraser` step; an OWNER deletion dissolves their Household (Q1) | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged), partial: `WorkspaceEraser` at the last `ErasureStep.WORKSPACES` (owned workspaces with their memberships, then other memberships); `WorkspaceEraserTest`, `AccountDeletionSchemaTest`, `AccountDeletionCoverageTest` |
+| R1-15 | - [ ] Tests: lifecycle invariants, the backfill (each existing user gets exactly one PERSONAL workspace), registration paths, header validation, token scoping, deletion | IN_PROGRESS | fern-funds #801 (`803b50c6`, open, not merged), partial: lifecycle invariants (constraints), backfill, registration paths and deletion covered; header validation and token scoping wait for R1-9 and R1-11 |
 
 - **Acceptance criteria:**
   - Every user, existing and new, has exactly one PERSONAL workspace with themselves as the ACTIVE OWNER.
@@ -407,3 +407,4 @@ It is additive and invisible to users, and it can be rolled back by dropping two
 | 2026-11-16 | R0-3 VERIFIED: U49 correction merged and deployed | fern-funds #799, `c6447fc5` |
 | 2026-11-16 | R0-8 IMPLEMENTED: table inventory committed for Product Owner review (questions Q-1 to Q-9). Roadmap count corrected: 69 tables carry `owner_id` (65 have entities) | R0-8 inventory, this commit |
 | 2026-11-17 | R0-8 VERIFIED after Product Owner review of `e17a4ed`: Q-1 to Q-9 decided and recorded (inventory 6.1, ADR 28.9); clarifications answered (inventory 9). Classification is now 54 WORKSPACE (47 with their own `workspace_id`), 29 USER, 15 REFERENCE. R2-1 VERIFIED as decisions only. R0-13 extended with the Q-8, `event_transactions` and retired-ledger counts. R0-15 added (retired ledger cleanup, BLOCKED on R0-13 and a retention assessment). R2 and R3 dependencies updated; U27, U28 and U31 decided. No code, schema, migration or production change | ADR 28.9, R0-8 inventory, this commit |
+| 2026-11-17 | R1-1 to R1-8 IN_PROGRESS, R1-14 and R1-15 IN_PROGRESS in part: workspace foundation in fern-funds #801 (`803b50c6`), not merged. `mvn verify` green (4,510 tests). Production not touched | fern-funds #801 |
