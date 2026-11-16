@@ -70,7 +70,7 @@ These came up when the roadmap brief was compared with ADR-001 and the code. Non
 
 | Phase | Equivalent ADR-001 phase | Tasks | VERIFIED | IMPLEMENTED | IN_PROGRESS | BLOCKED | NOT_STARTED |
 |---|---|---|---|---|---|---|---|
-| R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 14 | 7 | 0 | 0 | 0 | 7 |
+| R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 14 | 7 | 1 | 0 | 0 | 6 |
 | R1 Workspace foundation | 3 | 15 | 0 | 0 | 0 | 1 | 14 |
 | R2 Financial resource migration | 4 | 11 | 0 | 0 | 0 | 0 | 11 |
 | R3 Authorization and isolation | 5 (+ context of 3) | 14 | 0 | 0 | 0 | 0 | 14 |
@@ -78,7 +78,7 @@ These came up when the roadmap brief was compared with ADR-001 and the code. Non
 | R5 Frontend and admin | spread over 3, 5, 7a | 10 | 0 | 0 | 0 | 0 | 10 |
 | R6 Cleanup and hardening | 8 | 10 | 0 | 0 | 0 | 0 | 10 |
 | Ingestion track (dependency) | 6a, 6b, 6c | 3 | 0 | 0 | 0 | 2 | 1 |
-| **Total** | | **90** | **7** | **0** | **0** | **5** | **78** |
+| **Total** | | **90** | **7** | **1** | **0** | **5** | **77** |
 
 **Overall: about 8% of tasks verified, all of it prerequisite work (deletion integrity, billing safety, legacy closure, module structure). No workspace code exists yet.**
 
@@ -88,7 +88,7 @@ This is what the code does today, not what ADR-001 intends.
 
 | Area | Current implementation | Evidence |
 |---|---|---|
-| Tenancy key | `owner_id` (= the authenticated user) on **65 entities**, financial and identity alike. **45 repositories** have about 100 owner-keyed methods. There are about 89 `requireOwned`/`currentOwnerId()` call sites and 33 classes that use `JdbcTemplate` or native SQL | `grep "private Long ownerId"`; repository and call-site counts |
+| Tenancy key | `owner_id` (= the authenticated user) on **65 entities and 69 tables** (R0-8), financial and identity alike. **45 repositories** have about 100 owner-keyed methods. There are about 89 `requireOwned`/`currentOwnerId()` call sites and 33 classes that use `JdbcTemplate` or native SQL | `grep "private Long ownerId"`; repository and call-site counts |
 | Workspace | **Nothing.** No `workspace` table, entity or reference anywhere in code or migrations | `grep -ri workspace` returns nothing |
 | Owner stamping | Trigger stamps `owner_id` from the `app.owner_id` session variable when an insert leaves it null (V34, V35). `OwnerSessionDataSource` and `OwnerSessionTransactionManager` still publish `app.owner_id` and `app.active_context` | ADR F2, F3 |
 | Active context | `security.ActiveContext` returns MINE or HOUSEHOLD from the persisted `User.activeContext`, for every request **including API tokens, MCP and scheduled jobs**. 19 production classes depend on it: `DefaultAuthorizationService`, the transaction, category, loan, budget, cashflow and net-worth services, and the session plumbing | `grep ActiveContext` |
@@ -142,7 +142,7 @@ flowchart LR
 | R0-5 | - [x] Household cap of 6 people total via `pro_cap` | VERIFIED | #796, #797; V176, V177 |
 | R0-6 | - [x] Module structure, Spring Modulith strict | VERIFIED | Epic #775 (#776 to #789), `ModularityTest` |
 | R0-7 | - [x] Ownership boundary tests in CI (`OwnerScopingBoundaryTest`, `UnscopedFindAllBoundaryTest`, `AuthorizationBoundaryTest`, `AuthorizationParityTest`) | VERIFIED | Present and green on `master` |
-| R0-8 | - [ ] **Table inventory**: every table with `owner_id` or another user column, classified as WORKSPACE (financial), USER (identity, billing, credentials, preferences) or REFERENCE, with its owning module and its parent foreign keys. Committed as an appendix to this roadmap | NOT_STARTED | |
+| R0-8 | - [x] **Table inventory**: every table classified WORKSPACE, USER or REFERENCE (plus LEGACY, RETIRED and AMBIGUOUS dispositions), with module, ownership, FKs, sensitivity, code references and risks | IMPLEMENTED (awaiting Product Owner review; VERIFIED once Q-1 to Q-9 are answered) | [R0-8 inventory](WORKSPACE-TENANCY-R0-8-TABLE-INVENTORY.md): 98 tables from V1 to V179 applied to PostgreSQL 16. 47 WORKSPACE (39 need their own `workspace_id`), 24 USER, 15 REFERENCE, 12 AMBIGUOUS |
 | R0-9 | - [ ] **Access-path inventory**: every repository method, native query, `JdbcTemplate` call, FQL query table and MCP tool that filters by owner, mapped to its future workspace filter | NOT_STARTED | |
 | R0-10 | - [ ] **Active-context inventory**: the 19 `ActiveContext` consumers and what HOUSEHOLD widening each one does | NOT_STARTED | |
 | R0-11 | - [ ] **Resolve ADR decisions C-1 to C-5** (section 3) and record them in ADR-001 section 24 | NOT_STARTED | |
@@ -398,3 +398,4 @@ It is additive and invisible to users, and it can be rolled back by dropping two
 |---|---|---|
 | 2026-11-16 | Roadmap created from ADR-001 (Proposed) and an inspection of fern-funds `master` at `ca282f76`. R0-1, R0-2 and R0-4 to R0-7 marked VERIFIED, R0-3 IN_PROGRESS, from merged and deployed evidence. Conflicts C-1 to C-5 raised | This commit |
 | 2026-11-16 | R0-3 VERIFIED: U49 correction merged and deployed | fern-funds #799, `c6447fc5` |
+| 2026-11-16 | R0-8 IMPLEMENTED: table inventory committed for Product Owner review (questions Q-1 to Q-9). Roadmap count corrected: 69 tables carry `owner_id` (65 have entities) | R0-8 inventory, this commit |
