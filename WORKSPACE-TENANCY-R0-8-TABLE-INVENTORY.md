@@ -7,6 +7,7 @@
 | Code inspected | fern-funds `master` at `c6447fc5` (2026-11-16); the review clarifications of section 9 at the same commit (2026-11-17) |
 | Status | **VERIFIED (2026-11-17).** Product Owner review of `e17a4ed` accepted the method and classification as the baseline, decided Q-1 to Q-9 (section 6.1), and asked for four clarifications, answered in section 9. Documentation only: no schema, entity, migration or behaviour change, and no production access |
 | Earlier status | Analysis only, awaiting Product Owner review (`e17a4ed`, 2026-11-16) |
+| Post-R1 update | Section 10 records the V180 to V184 schema: current total 100 tables (54 WORKSPACE, 29 USER, 17 REFERENCE). Sections 1 to 9 remain the V1 to V179 baseline |
 
 ## 1. Method
 
@@ -53,7 +54,7 @@ Where the 12 formerly AMBIGUOUS tables went:
 
 One change inside WORKSPACE: `event_transactions` moves from "inherits, no column" to "own `workspace_id`", because a join between two parents cannot meet the Q-9 condition otherwise (section 9.2). So 39 + 7 + 1 = **47** tables need their own column.
 
-Counts exclude `flyway_schema_history`.
+Counts exclude `flyway_schema_history`. These are the V1 to V179 baseline counts; for the current schema after R1 (V180 to V184: 100 tables, 17 REFERENCE) see section 10.6.
 
 ### 3.1 Summary as submitted for review (`e17a4ed`, kept for the record)
 
@@ -409,48 +410,95 @@ No production access, drop or code change was made by this task.
 
 **Stale document found.** fern-funds `docs/ENGINEERING_DEBT.md` still lists DEBT-011 ("decide whether the internal ledger is worth keeping") as "Not started", although #720 removed the ledger and Q-6 now decides U31. It is outside this repository and was not changed.
 
-## 10. Addendum: schema added by R1 (V180 to V184, 2026-11-17)
+## 10. Addendum: post-R1 schema changes (V180 to V184)
 
-The inventory above was taken at fern-funds `c6447fc5` (V1 to V179). R1 has since merged and deployed V180 to V184 (fern-funds #801, #802, #803, #804; production at `471c7a79`). This addendum covers exactly that delta, read from the migrations on `master` and the code that uses them. Sections 3 to 9 are unchanged: no earlier classification moves.
+**Baseline and update are separate.** Sections 1 to 9 are the VERIFIED baseline: fern-funds `c6447fc5`, migrations V1 to V179, 98 tables, kept unchanged as the historical record. This section records only what R1 added afterwards, read from the migrations on fern-funds `master` (production at `471c7a79`) and the code that uses them. It reclassifies nothing in the baseline, and R0-8 stays VERIFIED.
 
-### 10.1 New tables
-
-| Table | Module | Ownership | FKs and relationships | Proposed class | Own `workspace_id` | Sens | Code | Notes and risks |
-|---|---|---|---|---|---|---|---|---|
-| workspace | workspace | none: it **is** the tenant. Owned by its one ACTIVE OWNER membership; there is deliberately no owner column (V180) | target of `workspace_membership (workspace_id, type)`, `api_token.workspace_id`, `oauth_grant.workspace_id` (both CASCADE) | **Tenant root** (see Q-10) | No: its `id` is the tenant key | P (name), F-adjacent settings | `Workspace`, `WorkspaceRepository`, `PersonalWorkspaces`, `MemberWorkspaces`, `WorkspaceEraser` (JDBC) | Holds the Q-7 money settings (`base_currency`, `budget_totals_per_period`, `merchant_auto_categorize_enabled`, V182). Type immutable by trigger. Exactly one ACTIVE OWNER enforced by a deferred constraint trigger. Every WORKSPACE table of R2 will reference it |
-| workspace_membership | workspace | `user_id` FK (RESTRICT) and `workspace_id` | composite FK `(workspace_id, workspace_type)` to `workspace (id, type)`; `user_id` to users | **Tenant root** (see Q-10) | It has one: it is the join between a person and a workspace | P | `WorkspaceMembership`, its repository, `ActiveMemberships`, `MembershipExits`, `WorkspaceEraser` (JDBC) | Partial unique indexes: one ACTIVE OWNER per workspace, one member per PERSONAL, one PERSONAL per user, one Household slot (INVITED or ACTIVE) per user (V183). This is the only authorization gate for the workspace context (R1-9, R1-11, R1-12) |
-
-Neither table carries `owner_id`, so a search for `owner_id` misses both (section 5).
-
-### 10.2 Changed tables
-
-| Table | Change | Classification effect |
-|---|---|---|
-| api_token | V184: `workspace_id` FK to `workspace` (CASCADE), backfilled to the PERSONAL workspace; `CHECK (session_token = (workspace_id IS NULL))`; index | None. Stays USER (4.2); the column is the D-14 **scope** the inventory anticipated, now built |
-| oauth_grant | V184: `workspace_id NOT NULL` FK to `workspace` (CASCADE), backfilled to PERSONAL; index | None. Stays USER (4.2), same reason |
-| users | No column change. V182 **copies** the three Q-7 settings to `workspace`; the `users` columns remain and are kept equal through `UserMoneySettingsChanged` in the same transaction | None. Removing the `users` copies is later work, not R0-8 |
-
-### 10.3 Counts after the addendum
-
-| Class | Tables |
+| Field | Value |
 |---|---|
-| WORKSPACE | 54 (unchanged) |
-| USER | 29 (unchanged) |
-| REFERENCE | 15 (unchanged) |
-| Tenant root, pending Q-10 | 2 (`workspace`, `workspace_membership`) |
-| **Total** | **100** (excluding `flyway_schema_history`) |
+| Schema inspected | `V180__workspace_and_membership.sql`, `V181__backfill_personal_workspaces.sql`, `V182__workspace_money_settings.sql`, `V183__one_household_counts_invitations.sql`, `V184__credentials_bound_to_a_workspace.sql` on fern-funds `master` |
+| Delivered by | fern-funds #801 (V180 to V183), #803 (V184) |
+| Classifications | Given by the Product Owner on 2026-11-17 (10.5) |
+| Scope | Documentation only. No code, schema, migration or production change |
 
-### 10.4 Question for the Product Owner
+### 10.1 `workspace` (V180, extended by V182)
 
-| # | Question | Recommendation |
+| Aspect | Current schema and code |
+|---|---|
+| Module | `workspace` (Spring Modulith, `allowedDependencies = {"exception", "security", "user"}`) |
+| Columns | `id` identity PK; `type VARCHAR(16) NOT NULL`; `name VARCHAR(120)` nullable (a PERSONAL workspace has no name of its own); `base_currency VARCHAR(8) NOT NULL`; `created_at`. V182 adds `budget_totals_per_period BOOLEAN NOT NULL DEFAULT FALSE` and `merchant_auto_categorize_enabled BOOLEAN NOT NULL DEFAULT TRUE` |
+| Constraints | `ck_workspace_type CHECK (type IN ('PERSONAL','HOUSEHOLD'))`; `uk_workspace_id_type UNIQUE (id, type)`, the target of the membership's composite FK; trigger `trg_workspace_type_is_immutable` (the type never changes); deferred constraint trigger `trg_workspace_has_one_active_owner` (exactly one ACTIVE OWNER at commit) |
+| Foreign keys | None outgoing. Incoming: `workspace_membership (workspace_id, workspace_type)`; `api_token.workspace_id` and `oauth_grant.workspace_id`, both `ON DELETE CASCADE` |
+| Ownership semantics | It **is** the tenant. There is deliberately no owner column: ownership is the one ACTIVE OWNER membership (V180 header comment) |
+| Data | Display name and the three money settings of Q-7 (D-39). V181 created one PERSONAL workspace per existing user; V182 copied the three settings from the owner. The `users` columns still exist and stay equal through `UserMoneySettingsChanged`, published by `UserService` and applied by `PersonalWorkspaces` in the same transaction |
+| Code | `Workspace`, `WorkspaceRepository`, `PersonalWorkspaces`, `MemberWorkspaces`, `MeWorkspacesController`; `WorkspaceEraser` deletes through `JdbcTemplate` |
+| Sensitivity | P (Household name). No credentials, no financial records |
+
+### 10.2 `workspace_membership` (V180, one partial index replaced by V183)
+
+| Aspect | Current schema and code |
+|---|---|
+| Module | `workspace` |
+| Columns | `id`; `workspace_id NOT NULL`; `workspace_type VARCHAR(16) NOT NULL` (copy of the workspace's type); `user_id NOT NULL`; `role VARCHAR(8)`; `status VARCHAR(16)`; `created_at`, `updated_at` |
+| Foreign keys | `fk_workspace_membership_workspace (workspace_id, workspace_type) REFERENCES workspace (id, type)`, which keeps the type copy honest; `fk_workspace_membership_user (user_id) REFERENCES users (id) ON DELETE RESTRICT` |
+| Constraints | `ck_workspace_membership_role` (OWNER, MEMBER, VIEWER); `ck_workspace_membership_status` (INVITED, ACTIVE, DECLINED, REVOKED, LEFT); `uk_workspace_membership_workspace_user UNIQUE (workspace_id, user_id)`; deferred constraint trigger `trg_workspace_membership_keeps_one_active_owner` |
+| Partial unique indexes | `ux_workspace_membership_one_active_owner` (one ACTIVE OWNER per workspace); `ux_workspace_membership_personal_single_member` (a PERSONAL workspace has one member); `ux_workspace_membership_one_personal_per_user`; `ux_workspace_membership_one_household_per_user` (V183: at most one HOUSEHOLD membership in INVITED or ACTIVE per user, replacing the V180 ACTIVE-only index) |
+| Ownership semantics | The join between a person and a workspace, and the **only** authorization gate for the workspace context: the request header (R1-9), bound credentials (R1-11) and scheduled units (R1-12) all check an ACTIVE membership |
+| Code | `WorkspaceMembership`, `WorkspaceMembershipRepository`, `ActiveMemberships` (implements `security.WorkspaceMemberships`), `MembershipExits` (runs every `security.MembershipExitHandler`); read through that SPI by `ApiTokenAuthenticationFilter`, `SecurityContextWorkspaceTaskRunner`, `OAuthTokenService` and `ApiTokenService`; `WorkspaceEraser` (JDBC) |
+| Sensitivity | P (who belongs to which Household, and with what role) |
+
+### 10.3 `api_token` (workspace binding added by V184)
+
+| Aspect | Current schema and code |
+|---|---|
+| Module | `user` (unchanged from the baseline, 4.2) |
+| Ownership | Unchanged: `owner_id NOT NULL REFERENCES users (id)` (V19) |
+| V184 change | `workspace_id BIGINT REFERENCES workspace (id) ON DELETE CASCADE`, backfilled to the owner's PERSONAL workspace for personal access tokens only; `ck_api_token_workspace_only_for_tokens CHECK (session_token = (workspace_id IS NULL))`, so a personal access token is always bound and a browser session never is; index `idx_api_token_workspace`. Mapped `updatable = false` in `ApiToken` |
+| Semantics | A user-owned credential with an explicit, fixed workspace binding (D-14). The binding limits where it acts; it does not change who owns it |
+| Code | `ApiToken`, `ApiTokenRepository`, `ApiTokenService`, `ApiTokenMembershipExit` (deletes the person's tokens bound to a workspace they leave); `ApiTokenAuthenticationFilter` refuses a token whose owner is no longer an ACTIVE member of its workspace |
+| Sensitivity | C |
+
+### 10.4 `oauth_grant` (workspace binding added by V184)
+
+| Aspect | Current schema and code |
+|---|---|
+| Module | `oauthserver` (unchanged from the baseline, 4.2) |
+| Ownership | Unchanged: `owner_id` (V112), FK to `users` added by V174 |
+| V184 change | `workspace_id BIGINT NOT NULL REFERENCES workspace (id) ON DELETE CASCADE`, backfilled to the owner's PERSONAL workspace; index `idx_oauth_grant_workspace`. Mapped `nullable = false, updatable = false` in `OAuthGrant`. Deleting a workspace deletes its grants, and the grants' codes and tokens with them |
+| Semantics | A user-owned authorization with an explicit workspace binding, fixed at approval |
+| Code | `OAuthGrant`, `OAuthGrantRepository`, `OAuthGrantMembershipExit`; `OAuthTokenService` refuses code exchange and refresh when the owner is no longer an ACTIVE member of the grant's workspace |
+| Sensitivity | C |
+
+### 10.5 Classification
+
+| Table | Classification | Own `workspace_id` needed in R2 |
 |---|---|---|
-| Q-10 | How should `workspace` and `workspace_membership` be classified? They fit none of the three classes: they are not data that belongs to a workspace, nor to one person, nor global reference data | Record them as a fourth, structural class "tenant root" that is never migrated by R2 and never gains a `workspace_id` of its own. No code depends on the answer |
+| workspace | **REFERENCE / TENANCY SYSTEM** | No: its `id` is the tenant key |
+| workspace_membership | **REFERENCE / TENANCY SYSTEM** | No: it already joins a person to a workspace |
+| api_token | **USER** (unchanged) | No: the V184 column is a binding, not ownership |
+| oauth_grant | **USER** (unchanged) | No: same |
 
-### 10.5 Effect on R1 and R2
+**What REFERENCE means here.** For these two tables, REFERENCE means tenancy and control-plane metadata: the records that define which workspaces exist and who may act in them. It does not mean a conventional static lookup table such as the reference tables of 4.3. They are not migrated by R2, never gain a tenant column of their own, and are not filtered by the R3 workspace scoping; they are what that scoping is checked against.
 
-- R2 composite foreign keys (`(workspace_id, ...)` per Q-9 and 9.2) target `workspace (id)`. `uk_workspace_id_type` exists if a WORKSPACE table ever needs the type as well.
-- Production on 2026-11-17 (read-only, aggregates only): 8 users, 8 PERSONAL workspaces, 8 memberships, 0 Households, every API token and OAuth grant bound to a workspace the owner is an ACTIVE member of. Every invariant check was zero.
-- Account deletion: `workspace_membership.user_id` is RESTRICT, so `WorkspaceEraser` must stay the last erasure step (R1-14). Any R2 table referencing `workspace` with RESTRICT would have to be erased before it.
+**A `workspace_id` column does not make a table WORKSPACE-owned.** `api_token` and `oauth_grant` remain user-owned: they keep `owner_id`, they are managed through the person's own token and connected-apps endpoints, and account deletion erases them with the person. Their `workspace_id` names the one workspace in which the credential may act, as D-14 and the baseline (4.2, "Scope column") anticipated.
+
+### 10.6 Counts: baseline and current schema
+
+| Class | Baseline, V1 to V179 (section 3) | Current schema, V1 to V184 |
+|---|---|---|
+| WORKSPACE | 54 (47 with their own `workspace_id`) | 54 (unchanged) |
+| USER | 29 | 29 (`api_token` and `oauth_grant` keep their class) |
+| REFERENCE | 15 | **17** (+ `workspace`, `workspace_membership`, as tenancy system) |
+| AMBIGUOUS | 0 | 0 |
+| **Total** | **98** | **100** |
+
+Counts exclude `flyway_schema_history`. The two new tables carry no `owner_id`, so the baseline's 69 `owner_id` tables and 65 `owner_id` entities are unchanged, and a search for `owner_id` misses both (compare section 5). `WorkspaceEraser` adds one `JdbcTemplate` class to the baseline's 30.
+
+### 10.7 Effect on R2
+
+- R2's composite foreign keys (Q-9, 9.2) will target `workspace (id)`; `uk_workspace_id_type` is available if a table ever needs the type as well.
+- `workspace_membership.user_id` is `RESTRICT`, so `WorkspaceEraser` must remain the last erasure step (R1-14). An R2 table that references `workspace` without `CASCADE` must be erased before it.
+- The three Q-7 settings exist on both `users` and `workspace`. Readers still use `users`; moving the readers to `workspace` and retiring the `users` copies is later work, outside this inventory.
 
 ## 11. Change log
 
@@ -458,4 +506,5 @@ Neither table carries `owner_id`, so a search for `owner_id` misses both (sectio
 |---|---|---|
 | 2026-11-16 | Inventory created: 98 tables classified from V1 to V179 on PostgreSQL 16; 12 AMBIGUOUS tables and questions Q-1 to Q-9 raised for the Product Owner | `e17a4ed` |
 | 2026-11-17 | Product Owner decisions Q-1 to Q-9 recorded (6.1). The 12 AMBIGUOUS tables classified: 7 WORKSPACE, 5 USER. Clarifications answered (9): the grocery learned-state tables have no parent and take their own `workspace_id`; `event_transactions` takes an integrity `workspace_id` with two composite FKs; the guarantee for the three single-parent tables is written down, with a schema test for R2-11; the retired ledger has no active behaviour or retention dependency. Counts are now 54 WORKSPACE (47 with their own column), 29 USER, 15 REFERENCE. The submitted summary is kept in 3.1. Status VERIFIED | This commit |
-| 2026-11-17 | Addendum (section 10) for the R1 schema, V180 to V184: `workspace` and `workspace_membership` added as tenant root (Q-10 raised); `api_token` and `oauth_grant` scope columns recorded. Total 100 tables. No earlier classification changed. Documentation only | This commit |
+| 2026-11-17 | Addendum (section 10) for the R1 schema, V180 to V184, first draft: `workspace` and `workspace_membership` proposed as a separate tenant-root class (Q-10) | `e564f0d` |
+| 2026-11-17 | Addendum revised with the Product Owner's classification: `workspace` and `workspace_membership` REFERENCE / TENANCY SYSTEM; `api_token` and `oauth_grant` stay USER with a workspace binding; Q-10 closed. Current schema 100 tables: 54 WORKSPACE, 29 USER, 17 REFERENCE. Baseline (sections 1 to 9, 98 tables) unchanged; R0-8 stays VERIFIED. Documentation only | This commit |
