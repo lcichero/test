@@ -409,9 +409,53 @@ No production access, drop or code change was made by this task.
 
 **Stale document found.** fern-funds `docs/ENGINEERING_DEBT.md` still lists DEBT-011 ("decide whether the internal ledger is worth keeping") as "Not started", although #720 removed the ledger and Q-6 now decides U31. It is outside this repository and was not changed.
 
-## 10. Change log
+## 10. Addendum: schema added by R1 (V180 to V184, 2026-11-17)
+
+The inventory above was taken at fern-funds `c6447fc5` (V1 to V179). R1 has since merged and deployed V180 to V184 (fern-funds #801, #802, #803, #804; production at `471c7a79`). This addendum covers exactly that delta, read from the migrations on `master` and the code that uses them. Sections 3 to 9 are unchanged: no earlier classification moves.
+
+### 10.1 New tables
+
+| Table | Module | Ownership | FKs and relationships | Proposed class | Own `workspace_id` | Sens | Code | Notes and risks |
+|---|---|---|---|---|---|---|---|---|
+| workspace | workspace | none: it **is** the tenant. Owned by its one ACTIVE OWNER membership; there is deliberately no owner column (V180) | target of `workspace_membership (workspace_id, type)`, `api_token.workspace_id`, `oauth_grant.workspace_id` (both CASCADE) | **Tenant root** (see Q-10) | No: its `id` is the tenant key | P (name), F-adjacent settings | `Workspace`, `WorkspaceRepository`, `PersonalWorkspaces`, `MemberWorkspaces`, `WorkspaceEraser` (JDBC) | Holds the Q-7 money settings (`base_currency`, `budget_totals_per_period`, `merchant_auto_categorize_enabled`, V182). Type immutable by trigger. Exactly one ACTIVE OWNER enforced by a deferred constraint trigger. Every WORKSPACE table of R2 will reference it |
+| workspace_membership | workspace | `user_id` FK (RESTRICT) and `workspace_id` | composite FK `(workspace_id, workspace_type)` to `workspace (id, type)`; `user_id` to users | **Tenant root** (see Q-10) | It has one: it is the join between a person and a workspace | P | `WorkspaceMembership`, its repository, `ActiveMemberships`, `MembershipExits`, `WorkspaceEraser` (JDBC) | Partial unique indexes: one ACTIVE OWNER per workspace, one member per PERSONAL, one PERSONAL per user, one Household slot (INVITED or ACTIVE) per user (V183). This is the only authorization gate for the workspace context (R1-9, R1-11, R1-12) |
+
+Neither table carries `owner_id`, so a search for `owner_id` misses both (section 5).
+
+### 10.2 Changed tables
+
+| Table | Change | Classification effect |
+|---|---|---|
+| api_token | V184: `workspace_id` FK to `workspace` (CASCADE), backfilled to the PERSONAL workspace; `CHECK (session_token = (workspace_id IS NULL))`; index | None. Stays USER (4.2); the column is the D-14 **scope** the inventory anticipated, now built |
+| oauth_grant | V184: `workspace_id NOT NULL` FK to `workspace` (CASCADE), backfilled to PERSONAL; index | None. Stays USER (4.2), same reason |
+| users | No column change. V182 **copies** the three Q-7 settings to `workspace`; the `users` columns remain and are kept equal through `UserMoneySettingsChanged` in the same transaction | None. Removing the `users` copies is later work, not R0-8 |
+
+### 10.3 Counts after the addendum
+
+| Class | Tables |
+|---|---|
+| WORKSPACE | 54 (unchanged) |
+| USER | 29 (unchanged) |
+| REFERENCE | 15 (unchanged) |
+| Tenant root, pending Q-10 | 2 (`workspace`, `workspace_membership`) |
+| **Total** | **100** (excluding `flyway_schema_history`) |
+
+### 10.4 Question for the Product Owner
+
+| # | Question | Recommendation |
+|---|---|---|
+| Q-10 | How should `workspace` and `workspace_membership` be classified? They fit none of the three classes: they are not data that belongs to a workspace, nor to one person, nor global reference data | Record them as a fourth, structural class "tenant root" that is never migrated by R2 and never gains a `workspace_id` of its own. No code depends on the answer |
+
+### 10.5 Effect on R1 and R2
+
+- R2 composite foreign keys (`(workspace_id, ...)` per Q-9 and 9.2) target `workspace (id)`. `uk_workspace_id_type` exists if a WORKSPACE table ever needs the type as well.
+- Production on 2026-11-17 (read-only, aggregates only): 8 users, 8 PERSONAL workspaces, 8 memberships, 0 Households, every API token and OAuth grant bound to a workspace the owner is an ACTIVE member of. Every invariant check was zero.
+- Account deletion: `workspace_membership.user_id` is RESTRICT, so `WorkspaceEraser` must stay the last erasure step (R1-14). Any R2 table referencing `workspace` with RESTRICT would have to be erased before it.
+
+## 11. Change log
 
 | Date | Change | Evidence |
 |---|---|---|
 | 2026-11-16 | Inventory created: 98 tables classified from V1 to V179 on PostgreSQL 16; 12 AMBIGUOUS tables and questions Q-1 to Q-9 raised for the Product Owner | `e17a4ed` |
 | 2026-11-17 | Product Owner decisions Q-1 to Q-9 recorded (6.1). The 12 AMBIGUOUS tables classified: 7 WORKSPACE, 5 USER. Clarifications answered (9): the grocery learned-state tables have no parent and take their own `workspace_id`; `event_transactions` takes an integrity `workspace_id` with two composite FKs; the guarantee for the three single-parent tables is written down, with a schema test for R2-11; the retired ledger has no active behaviour or retention dependency. Counts are now 54 WORKSPACE (47 with their own column), 29 USER, 15 REFERENCE. The submitted summary is kept in 3.1. Status VERIFIED | This commit |
+| 2026-11-17 | Addendum (section 10) for the R1 schema, V180 to V184: `workspace` and `workspace_membership` added as tenant root (Q-10 raised); `api_token` and `oauth_grant` scope columns recorded. Total 100 tables. No earlier classification changed. Documentation only | This commit |
