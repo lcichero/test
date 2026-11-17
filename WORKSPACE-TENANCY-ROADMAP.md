@@ -71,14 +71,14 @@ These came up when the roadmap brief was compared with ADR-001 and the code. Non
 | Phase | Equivalent ADR-001 phase | Tasks | VERIFIED | IMPLEMENTED | IN_PROGRESS | BLOCKED | NOT_STARTED |
 |---|---|---|---|---|---|---|---|
 | R0 Preparation and baseline | 0a, 0b, 0c, 2 + inventory | 15 | 8 | 0 | 0 | 1 | 6 |
-| R1 Workspace foundation | 3 | 15 | 0 | 0 | 12 | 1 | 2 |
+| R1 Workspace foundation | 3 | 15 | 0 | 0 | 13 | 1 | 1 |
 | R2 Financial resource migration | 4 | 11 | 1 | 0 | 0 | 0 | 10 |
 | R3 Authorization and isolation | 5 (+ context of 3) | 14 | 0 | 0 | 0 | 0 | 14 |
 | R4 Households | 7a | 13 | 0 | 0 | 0 | 2 | 11 |
 | R5 Frontend and admin | spread over 3, 5, 7a | 10 | 0 | 0 | 0 | 0 | 10 |
 | R6 Cleanup and hardening | 8 | 10 | 0 | 0 | 0 | 0 | 10 |
 | Ingestion track (dependency) | 6a, 6b, 6c | 3 | 0 | 0 | 0 | 2 | 1 |
-| **Total** | | **91** | **9** | **0** | **12** | **6** | **64** |
+| **Total** | | **91** | **9** | **0** | **13** | **6** | **63** |
 
 **Overall: about 10% of tasks verified (9 of 91): the prerequisite work (deletion integrity, billing safety, legacy closure, module structure), the R0-8 table inventory, and R2-1, the classification decisions it settled. No workspace code exists yet.**
 
@@ -185,11 +185,11 @@ flowchart LR
 | R1-8 | - [ ] Backfill migration: one PERSONAL workspace and OWNER membership per existing user; `base_currency` copied from `users` (D-39). Generic SQL, no ids | IN_PROGRESS | fern-funds #801 (`740e7e18`, open, not merged): V181 generic, idempotent backfill; V182 adds `budget_totals_per_period` and `merchant_auto_categorize_enabled` (same type, nullability and defaults as `users`) and sets all three Q-7 settings from the owner; provisioned on creation and kept in sync through `UserMoneySettingsChanged` in the settings transaction; `PersonalWorkspaceBackfillTest`, `UserCreationPersonalWorkspaceTest`. Production count after deploy still to do |
 | R1-9 | - [ ] `CurrentWorkspace` resolver: workspace id from the `X-Fofi-Workspace` header, validated against an ACTIVE membership, cached per request. Not yet used for authorization | IN_PROGRESS | fern-funds #802 (`5f2c31aa`, CI green, open, not merged): `CurrentWorkspace` in the `workspace` module; MVC interceptor on `/api/**` after authentication; header must be one positive id (400) with an ACTIVE membership (404 otherwise, same for unknown, foreign, INVITED, DECLINED, REVOKED, LEFT); no header means the PERSONAL workspace, looked up on first use; kept as a request attribute and removed on completion; `/api/auth/**` and `/api/me/workspaces` not intercepted; `WorkspaceRequestResolutionTest`, `WorkspaceSelectionUnitTest` |
 | R1-10 | - [ ] `GET /api/me/workspaces`: the caller's workspaces with type, role and name | IN_PROGRESS | fern-funds #802 (`5f2c31aa`, CI green, open, not merged): ACTIVE memberships only, `{id, type, name, role}`, PERSONAL first; `WorkspaceRequestResolutionTest` |
-| R1-11 | - [ ] `workspace_id` on `api_token` and `oauth_grant`, backfilled to the PERSONAL workspace; new tokens require one (D-14) | NOT_STARTED | |
+| R1-11 | - [ ] `workspace_id` on `api_token` and `oauth_grant`, backfilled to the PERSONAL workspace; new tokens require one (D-14) | IN_PROGRESS | fern-funds #803 (`7baca4fd`, stacked on #802, open, not merged): V184 `workspace_id` on both (FK, cascade), backfilled to PERSONAL, sessions unbound by CHECK; issued in the request's workspace; header must equal it (404 otherwise); owner no longer ACTIVE member refuses the credential (401); `WorkspaceBoundCredentialsTest`, `CredentialWorkspaceSchemaTest` |
 | R1-12 | - [ ] Scheduled jobs run per explicit workspace (`WorkspaceTask`), not from a stored user context | NOT_STARTED | |
 | R1-13 | - [ ] Lifecycle services (create Household, invite, accept, leave, remove, transfer, dissolve) with the workspace-row lock of D-37, not exposed by any controller | BLOCKED | Needs C-1, C-2 and the R4 decisions on transfer and dissolution |
 | R1-14 | - [ ] Account deletion erases the user's workspaces and memberships: a `WorkspaceDataEraser` step; an OWNER deletion dissolves their Household (Q1) | IN_PROGRESS | fern-funds #801 (`740e7e18`, open, not merged), partial: `WorkspaceEraser` at the last `ErasureStep.WORKSPACES` (owned workspaces with their memberships, then other memberships); `WorkspaceEraserTest`, `AccountDeletionSchemaTest`, `AccountDeletionCoverageTest` |
-| R1-15 | - [ ] Tests: lifecycle invariants, the backfill (each existing user gets exactly one PERSONAL workspace), registration paths, header validation, token scoping, deletion | IN_PROGRESS | fern-funds #801 (`740e7e18`, open, not merged), partial: lifecycle invariants (constraints), backfill, registration paths and deletion covered; header validation covered by fern-funds #802 (`5f2c31aa`, open); token scoping waits for R1-11 |
+| R1-15 | - [ ] Tests: lifecycle invariants, the backfill (each existing user gets exactly one PERSONAL workspace), registration paths, header validation, token scoping, deletion | IN_PROGRESS | fern-funds #801 (`740e7e18`, open, not merged), partial: lifecycle invariants (constraints), backfill, registration paths and deletion covered; header validation covered by fern-funds #802 (`5f2c31aa`, open); token scoping covered by fern-funds #803 (`7baca4fd`, open) |
 
 - **Acceptance criteria:**
   - Every user, existing and new, has exactly one PERSONAL workspace with themselves as the ACTIVE OWNER.
@@ -412,3 +412,4 @@ It is additive and invisible to users, and it can be rolled back by dropping two
 | 2026-11-17 | Product Owner final correction on fern-funds #801, pushed as `740e7e18`: a missing PERSONAL workspace now fails and rolls back the whole settings change instead of logging, so the Q-7 copies cannot differ. `mvn verify` green (4,531 tests). Statuses unchanged: IN_PROGRESS until merge | fern-funds #801 |
 | 2026-11-17 | R1-9 and R1-10 IN_PROGRESS on fern-funds #802 (`ad69bc45`), not merged; R1-15 evidence adds header validation. #801 merged as `096209c7`. |
 | 2026-11-17 | fern-funds #802 corrected (`5f2c31aa`): every positive BIGINT id accepted, overflow is the controlled 400; CI green. Still open, not merged. |
+| 2026-11-17 | R1-11 IN_PROGRESS on fern-funds #803 (`7baca4fd`), stacked on #802, not merged; R1-15 evidence adds token scoping. |
